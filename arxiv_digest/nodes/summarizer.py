@@ -22,10 +22,13 @@ logger = logging.getLogger(__name__)
 APPENDIX_HEADING = re.compile(r"^[A-H](?:\.\d+)*\s")
 
 
+CAPTION = re.compile(r"^(Table|Figure|Fig\.)\s*\d+", re.IGNORECASE)
+
+
 def is_table_like(paragraph: str, threshold: float = 0.4) -> bool:
-    """True for flattened table text: a paragraph where numeric tokens dominate."""
-    if "\n" in paragraph and " | " in paragraph:
-        return True  # a reconstructed table (one "label | v1 | v2" row per line)
+    """True for table text: a reconstructed table, or a paragraph where numeric tokens dominate."""
+    if " | " in paragraph:
+        return True  # reconstructed table rows ("label | header: value | ...")
     tokens = paragraph.split()
     if len(tokens) < 8:
         return False
@@ -33,12 +36,34 @@ def is_table_like(paragraph: str, threshold: float = 0.4) -> bool:
     return numeric / len(tokens) >= threshold
 
 
-def prose_only(text: str) -> str:
-    """Drop flattened tables and stray table/figure labels (fragments under four words).
+def is_float_debris(paragraph: str) -> bool:
+    """Captions and short labels (e.g. "Llama-3.1-8B, 16K RULER, 10% Cache Budget").
 
-    A table's row/column structure is lost in extraction, which invites misattributed numbers.
+    Tables and figures float in the PDF's reading order, so their captions and group labels
+    often land inside unrelated prose and pull its numbers toward the wrong benchmark.
     """
-    return "\n\n".join(p for p in text.split("\n\n") if len(p.split()) >= 4 and not is_table_like(p))
+    text = paragraph.strip()
+    if CAPTION.match(text):
+        return True
+    is_sentence = ". " in text or text.endswith((".", "?", "!", ":", "-"))  # "-": a word split mid-sentence
+    return len(text.split()) < 12 and not is_sentence
+
+
+def prose_only(text: str) -> str:
+    """Keep running prose: drop tables, captions and labels, and re-join words they split.
+
+    A floating table can interrupt a sentence mid-word ("We evalu-" … table … "ate under"),
+    so after removing it, a paragraph ending in a hyphen is joined to a lowercase continuation.
+    """
+    kept: list[str] = []
+    for paragraph in text.split("\n\n"):
+        if len(paragraph.split()) < 4 or is_table_like(paragraph) or is_float_debris(paragraph):
+            continue
+        if kept and kept[-1].endswith("-") and paragraph[:1].islower():
+            kept[-1] = kept[-1][:-1] + paragraph
+        else:
+            kept.append(paragraph)
+    return "\n\n".join(kept)
 
 
 def build_summarization_context(state: AgentState, max_chars: int = 14000) -> str:

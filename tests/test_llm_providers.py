@@ -239,3 +239,21 @@ def test_prose_only_drops_flattened_tables_and_labels():
         ]
     )
     assert prose_only(text) == "GRKV raises the average score from 33.96 to 34.58 with SnapKV."
+
+
+def test_prose_only_drops_floating_table_debris_and_rejoins_split_words():
+    from arxiv_digest.nodes.summarizer import prose_only
+
+    text = "\n\n".join(
+        [
+            "LongBench contains 16 long-context tasks. We evalu-",
+            "Llama-3.1-8B-Instruct, 16K RULER, 10% Cache Budget",
+            "Full Cache 89.28 | niah_mk1: 99.60 | Avg.: 93.36",
+            "Table 2: Detailed scores on all 13 RULER tasks.",
+            "ate under a 10% cache budget and GRKV raises the average from 33.96 to 34.58.",
+        ]
+    )
+    assert prose_only(text) == (
+        "LongBench contains 16 long-context tasks. We evaluate under a 10% cache budget "
+        "and GRKV raises the average from 33.96 to 34.58."
+    )

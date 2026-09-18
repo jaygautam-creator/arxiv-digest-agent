@@ -140,3 +140,13 @@ def test_readme_diagram_is_generated_from_the_graph():
     assert build_research_graph().to_mermaid() in readme, (
         "Regenerate the README diagram: python -m arxiv_digest --graph"
     )
+
+
+@patch("arxiv_digest.nodes.arxiv_client.fetch_from_arxiv", side_effect=dummy_fetch)
+@patch("arxiv_digest.nodes.pdf_parser.download_pdf", return_value=None)
+def test_saved_session_includes_the_persist_step(mock_download, mock_arxiv, tmp_path):
+    config = _config(tmp_path)
+    state = ResearchStateGraph(config=config, llm=MockLLM()).execute("1706.03762")
+
+    saved = AgentState.load_session(config.sessions_dir / f"session_{state.session_id}.json")
+    assert saved.visited_nodes[-1] == "persist_session"

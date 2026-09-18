@@ -126,9 +126,12 @@ class StateGraph:
         for _ in range(max_steps):
             node = self.nodes[current]
             errors_before, logs_before = len(state.errors), len(state.execution_logs)
+            # Record the step before running it, so a node that saves the state (persist_session)
+            # writes a path that includes itself.
+            state.current_node = node.name
+            state.visited_nodes.append(node.name)
             notify(node.name, "running", node.description)
             state = node.run(state, context)
-            state.visited_nodes.append(node.name)
 
             if len(state.errors) > errors_before:
                 notify(node.name, "error", state.errors[-1])
