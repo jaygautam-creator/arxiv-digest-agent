@@ -315,34 +315,24 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 ## 6. Design Decisions & Tradeoffs
 
-**Explicit graph in plain Python.** Each stage is a function `AgentState → AgentState` in `nodes/`, and `graph.py` wires them in order with one conditional edge (ranking runs only for topic searches with more than one candidate). An error recorded by a node stops the graph at that point. I chose this over LangGraph because a linear pipeline with one branch doesn't need a framework: each node stays unit-testable, and the whole control flow is visible in about 100 lines. The QA loop sits outside the graph because it is interactive. It reads the same state object.
+**Explicit graph in plain Python.** Each stage is a function `AgentState → AgentState`, and `graph.py` runs them in order with one conditional edge: ranking runs only for topic searches with more than one candidate. A node that records an error stops the graph. A linear pipeline with one branch didn't need LangGraph: every node stays unit-testable, and the whole control flow fits in about 100 lines.
 
-**State and persistence.** `AgentState` is a Pydantic model holding the query, candidates, selected paper, parsed sections, chunks, briefing, QA history and a per-node execution log. It is saved to `data/sessions/session_<id>.json` when the graph finishes and after every QA turn, so `--session` resumes a conversation after a restart. Chunks are saved with their embeddings, so resuming rebuilds the index without re-embedding.
+**State.** `AgentState` (Pydantic) holds the query, candidates, parsed sections, chunks with embeddings, briefing, QA history and a per-node log. It is saved as JSON after the graph and after every QA turn, so `--session` resumes a conversation without re-parsing or re-embedding.
 
-**Retrieval: measured, then chosen.** I started with TF-IDF only: no model downloads, deterministic, sub-millisecond. Before changing it, I built a 33-question evaluation set, and the first finding wasn't about ranking at all. The TF-IDF gate (0.15) refused 8 of 27 answerable questions, because TF-IDF scores drop whenever the wording differs from the paper. After stopword removal, off-topic questions score exactly 0, so recalibrating the gate to 0.05 fixed that without embeddings. Embeddings then earned their place on ranking. Alone, they did *worse* than TF-IDF on these number- and name-heavy papers, but fusing both rankings (RRF) and reranking with a cross-encoder found the answer for 20/27 questions, against 14/27 for TF-IDF. The embedding gate (0.55) also separates off-topic from on-topic questions semantically instead of relying on zero word overlap. The models are an optional extra, so the base install stays light. The TF-IDF side keeps its earlier fixes: stopwords are removed, and hyphenated terms are split so "LLaMA-3-8B" matches "LLaMA-3-Instruct-8B".
+**Retrieval: measured, then chosen.** I built a 33-question evaluation set before changing retrieval. Its first finding was a miscalibrated gate: TF-IDF at 0.15 refused 8 of 27 answerable questions. Off-topic questions score exactly 0 once stopwords are removed, so 0.05 fixed that. Embeddings alone ranked *worse* than TF-IDF on these number-heavy papers, but fusing both rankings (RRF) and adding a cross-encoder reranker found the answer for 20/27 questions, against 14/27. The models are an optional extra, so the base install stays light.
 
-**Grounding in layers.** (1) Paper metadata (title, authors, ID, date) is copied from arXiv by code, and the LLM's values for those fields are discarded. (2) A similarity gate refuses out-of-scope questions before any LLM call. (3) The QA prompt allows only the retrieved passages and requires a `NOT IN PAPER:` marker for refusals, which the code checks instead of guessing from wording. (4) Every answer lists the chunks it was given. (5) Tables are rebuilt row by row (`label | v1 | v2`) so values stay attached to their row. The summarizer still leaves tables out: on one run, Groq's model mixed LongBench and RULER scores from table text, and the paper's prose states the headline numbers unambiguously. QA can use tables, and its prompt says to quote a table value only when the row and column are clear.
+**Grounding in layers.** Paper metadata is copied from arXiv by code, never from the LLM. A similarity gate refuses off-topic questions before any LLM call. The QA prompt allows only retrieved passages and requires a `NOT IN PAPER:` marker for refusals, which the code checks. Tables are rebuilt as `row | header: value` so numbers stay attached to their row and column. The summarizer reads prose only, after one run mixed up numbers from flattened tables.
 
-**Handling the vague and failure cases.**
-- **Zero candidates:** relax to the two leading terms, then accept any term.
-- **Many candidates:** fetch the top 5 by arXiv relevance and let the ranking node choose, preferring recency for "recent" queries.
-- **PDF problems:** download failure or no text layer → the arXiv abstract becomes the only section, with a warning. PyMuPDF failure → `pypdf`. Huge papers are bounded by the 14k-character briefing context and by chunk-level retrieval.
-- **LLM problems:** retries with backoff and Gemini model fallback. Malformed JSON → one corrective re-ask. Total failure → an abstract-only briefing that says so.
+**Failure cases.** Zero arXiv results → the query is relaxed step by step. Many results → the LLM ranks them, preferring recent papers when asked. A PDF that won't download or has no text → the abstract, with a warning. A PyMuPDF failure → `pypdf`. LLM errors → retries and Gemini model fallback; malformed JSON gets one corrective re-ask; total failure yields an abstract-only briefing that says so.
 
-**What I would do with more time.**
-1. Grow the evaluation set. 33 questions over 5 papers is enough to show large effects (like the gate), not small ones, and both gate thresholds were chosen on the same set they are reported on.
-2. Attach column headers to table rows. They are often rotated or in a separate block, so rows currently carry only their row label.
-3. A second retrieval pass for questions the LLM marks `NOT IN PAPER`, e.g. rewriting the query with the model, since some of those are retrieval misses rather than true absences.
-4. OCR (e.g. Tesseract) for scanned PDFs instead of falling back to the abstract.
+**With more time:** grow the evaluation set (33 questions only shows large effects, and the thresholds were tuned on it); a second retrieval pass with a rewritten query when the LLM answers `NOT IN PAPER`; OCR for scanned PDFs.
 
 **Known limitations.**
-- Retrieval still misses about a quarter of answerable questions in the eval set, mostly paraphrases whose answer sits in a single sentence ("How large is the implementation?" → "about 3K lines of code"). The agent then says the passages don't answer the question, which is correct behavior but not a useful answer.
-- When retrieval misses, the model occasionally answers from general knowledge anyway (in the eval, it described "standard softmax attention" instead of saying the kernel wasn't in the passages). The refusal rules reduce this but don't eliminate it.
-- On-topic questions the paper doesn't answer ("GRKV on ImageNet") pass the similarity gate. They are caught by the LLM's `NOT IN PAPER` rule, not by retrieval.
-- Hybrid mode adds about 5–30 s per paper for the first embedding pass (CPU) and ~0.5 s per question for reranking.
-- Heading detection assumes LaTeX-style bold numbered headings. Unusual templates fall back to fewer, coarser sections. Floating tables can be attributed to the neighbouring section.
-- Scanned PDFs without a text layer are summarized from the abstract only. No OCR is used.
-- LLM output is not perfect. The example briefing contains one wrong method detail, which is why the briefing is a starting point for reading and not a substitute for it.
+- Retrieval still misses about a quarter of answerable eval questions, mostly paraphrases answered by a single sentence. The agent then correctly says the passages don't answer, which isn't useful to the reader.
+- When retrieval misses, the model occasionally answers from general knowledge anyway (one case in the evaluation).
+- On-topic questions the paper doesn't answer pass the gate and rely on the LLM's refusal rule.
+- Heading detection assumes LaTeX-style bold numbered headings. Floating tables can land in a neighbouring section, and sub-tables far below their header row lose their column names.
+- The example briefing contains one wrong method detail. A briefing is a guide to reading the paper, not a substitute for it.
 
 ---
 
