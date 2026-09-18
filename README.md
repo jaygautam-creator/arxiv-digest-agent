@@ -222,46 +222,51 @@ python -m arxiv_digest "1706.03762" --mock
 
 ## 4. Example Run
 
-Full, unedited transcript with the pipeline trace, all candidates and verification notes: **[`examples/sample_qa_run.md`](examples/sample_qa_run.md)**. The briefing artifacts are [`examples/kv_cache_briefing.md`](examples/kv_cache_briefing.md) and [`.json`](examples/kv_cache_briefing.json).
+Full, unedited transcript with the graph trace, all candidates, every QA citation and verification notes: **[`examples/sample_qa_run.md`](examples/sample_qa_run.md)**. The briefing artifacts are [`examples/kv_cache_briefing.md`](examples/kv_cache_briefing.md) and [`.json`](examples/kv_cache_briefing.json).
 
-**Input:** `"recent work on KV-cache compression for LLMs"` (Groq `openai/gpt-oss-120b`, 2026-09-18).
+**Input:** `"recent work on KV-cache compression for LLMs"` (Groq `openai/gpt-oss-120b`, hybrid retrieval, 2026-09-19).
 
-*This run was recorded with TF-IDF retrieval, before hybrid retrieval, table reconstruction and exact page ranges were added. The briefing doesn't depend on retrieval. The QA citations would differ today; for example, the fine-tuning question below is one the evaluation still marks as a miss in both modes.*
-arXiv returned 5 candidates (2024–2026). The ranking node selected the most recent directly relevant one, **GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs** ([2605.31105](https://arxiv.org/abs/2605.31105)). The parser found 33 sections, the chunker produced 137 chunks, and the whole run took about 8 s.
+arXiv returned 5 candidates (2024–2026). The ranking node selected the most recent directly relevant one, **GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs** ([2605.31105](https://arxiv.org/abs/2605.31105)). The parser found 33 sections, and the chunker produced 159 chunks. Path: `query_understanding → arxiv_retrieval → paper_ranking → fetch_and_parse → chunk_and_embed → vector_indexing → summarize_briefing → persist_session`.
 
 **Briefing (excerpt):**
 
 > **Key Results & Claims**
-> - On Llama-3.1-8B-Instruct (LongBench, 10% cache budget) GRKV raises the average score from 33.96 to 34.58 with SnapKV and from 36.00 to 36.58 with CriticalKV, improving 14/16 tasks in both cases.
-> - On Mistral-7B-Instruct‑v0.3 (LongBench, 10% cache budget) GRKV improves SnapKV from 33.12 to 33.75 and CriticalKV from 33.69 to 34.30, with gains on 12/16 and 14/16 tasks respectively. […]
+> - On Llama-3.1-8B‑Instruct with a 10% cache budget, GRKV raises the LongBench average score from 33.96 to 34.58 when paired with SnapKV and from 36.00 to 36.58 when paired with CriticalKV (improving 14/16 tasks in both cases)
+> - On Mistral-7B‑Instructv0.3 with a 10% cache budget, GRKV improves SnapKV’s LongBench average from 33.12 to 33.75 (12/16 tasks) and CriticalKV’s from 33.69 to 34.30 (14/16 tasks)
+> - […three ablation results…]
 >
 > **Limitations & Edge Cases**
-> - Evaluation is limited to three open‑source English models (Llama‑3.1‑8B‑Instruct, Mistral‑7B‑Instruct‑v0.3, Qwen3‑14B) and two long‑context benchmarks (LongBench, RULER); results may not transfer to larger proprietary models or multilingual/multimodal settings.
-> - The surrogate prompt‑derived query window is an empirical proxy; misalignment between this window and actual future queries can reduce reconstruction effectiveness […]
+> - Evaluations are limited to three open‑source models (Llama‑3.1‑8B‑Instruct, Mistral‑7B‑Instructv0.3, Qwen3‑14B) and two English‑centric long‑context benchmarks (LongBench and RULER); results may not generalize to larger proprietary models, multilingual or multimodal settings
+> - […]
 
-I checked the briefing against the PDF. All 20 numbers match with the correct model and benchmark. One method bullet says the objective minimizes "cosine distance", but the paper minimizes squared L2 error. The transcript leaves it uncorrected.
+I checked the briefing against the PDF. All 24 numbers appear in the paper and are attributed to the right model and benchmark. One overstatement: the summary says GRKV "eliminates" over-merging, where the paper says "mitigates". The transcript leaves it unedited.
 
-**QA exchanges:**
+**QA exchanges** (each one runs the graph's `ask` entry point):
 
 ```
 Ask Paper > What does GRKV score on RULER with Llama-3.1-8B-Instruct at a 10% cache budget?
 ```
-> GRKV attains an average RULER score of **29.09** with Llama‑3.1‑8B‑Instruct when the cache budget is limited to 10 % (using the SnapKV eviction method)【Source 2】. (With the alternative CriticalKV eviction method, the score is 41.51【Source 2】.)
+> GRKV improves the RULER scores for Llama‑3.1‑8B‑Instruct under a 10 % cache budget:
+> 
+> * **SnapKV + GRKV:** average score = **29.09**【Source 2】 (also noted in the ablation table as the best average when λₖ = λᵥ = 10⁻²【Source 1】).  
+> * **CriticalKV + GRKV:** average score = **41.51**【Source 2】.  
+> 
+> Thus, with GRKV the RULER average is 29.09 when using SnapKV and 41.51 when using CriticalKV.
 >
-> *Citations: 4 Experiments › 4.2 Experimental Results (p. 7, score 0.318), plus three appendix chunks. Both numbers match Table 2.*
+> *Citations include "4 Experiments › 4.2 Experimental Results" (p. 7). Both numbers match Table 2.*
 
 ```
 Ask Paper > Does GRKV require fine-tuning the model?
 ```
-> *[Not grounded]* The retrieved passages do not answer this. The provided excerpts do not contain any statement about whether GRKV requires fine‑tuning of the language model. […]
+> *[Not grounded]* The retrieved passages do not answer this. The provided excerpts do not contain any statement indicating whether GRKV requires fine‑tuning of the language model. No source mentions model fin[…]
 >
-> *This is an honest retrieval miss: the paper says "training-free", but lexical retrieval does not link that to "fine-tuning". The model reported the gap instead of guessing.*
+> *An honest miss: the paper says "training-free", but that passage wasn't retrieved for this wording. The model reported the gap instead of guessing, and the evaluation set tracks this type of miss.*
 
 ```
 Ask Paper > What is the capital of France?
 ```
-> *[Refused by similarity gate: best chunk scored 0.0, so no LLM call was made]*
-> I cannot answer this question based on the paper. The document does not contain relevant information regarding this query […]
+> *[Refused by the similarity gate: no chunk was similar enough, so the LLM was never called]*
+> I cannot answer this question based on the paper. The document does not contain relevant information regarding[…]
 
 ---
 
