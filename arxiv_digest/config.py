@@ -60,7 +60,16 @@ class AgentConfig(BaseModel):
     chunk_size: int = Field(default=800)
     chunk_overlap: int = Field(default=150)
     retrieval_top_k: int = Field(default=4)
-    min_similarity_threshold: float = Field(default=0.15)
+    min_similarity_threshold: float = Field(default=0.05)
+
+    # Retrieval backend: "tfidf" (lexical only), "hybrid" (TF-IDF + local embeddings + reranker),
+    # or "auto" (hybrid when the optional fastembed extra is installed). The model default is tfidf
+    # so tests never download models; from_env() defaults to auto.
+    retrieval_mode: str = Field(default="tfidf")
+    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
+    reranker_model: str = Field(default="Xenova/ms-marco-MiniLM-L-6-v2")
+    dense_similarity_threshold: float = Field(default=0.55)
+    rerank_candidates: int = Field(default=20)
     request_timeout: float = Field(default=30.0)
 
     @classmethod
@@ -118,5 +127,10 @@ class AgentConfig(BaseModel):
             chunk_size=int(os.getenv("CHUNK_SIZE", "800")),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "150")),
             retrieval_top_k=int(os.getenv("RETRIEVAL_TOP_K", "4")),
-            min_similarity_threshold=float(os.getenv("MIN_SIMILARITY_THRESHOLD", "0.15")),
+            min_similarity_threshold=float(os.getenv("MIN_SIMILARITY_THRESHOLD", "0.05")),
+            retrieval_mode=os.getenv("RETRIEVAL_MODE", "auto").strip().lower(),
+            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
+            reranker_model=os.getenv("RERANKER_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2"),
+            dense_similarity_threshold=float(os.getenv("DENSE_SIMILARITY_THRESHOLD", "0.55")),
+            rerank_candidates=int(os.getenv("RERANK_CANDIDATES", "20")),
         )

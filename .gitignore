@@ -56,3 +56,6 @@ data/sessions/
 *.log
 scratch/
 session_logs/
+
+# Downloaded embedding / reranker models
+data/models/

@@ -15,6 +15,7 @@ from rich.text import Text
 
 from arxiv_digest.agent import ArxivDigestAgent
 from arxiv_digest.config import AgentConfig, LLMProviderType
+from arxiv_digest.embeddings import fastembed_available
 from arxiv_digest.llm import ProviderConfigError, describe_provider
 from arxiv_digest.state import AgentState
 
@@ -78,7 +79,7 @@ def run_qa_interactive_loop(agent: ArxivDigestAgent, state: AgentState) -> None:
                 cite_table.add_column("Excerpt Snippet", style="dim", overflow="fold")
 
                 for c in response.citations:
-                    cite_table.add_row(c.section, str(c.page), c.excerpt)
+                    cite_table.add_row(c.section, c.page_label or str(c.page), c.excerpt)
                 console.print(cite_table)
         else:
             console.print(Panel(
@@ -148,6 +149,10 @@ def main() -> None:
         sys.exit(2)
 
     console.print(f"[bold]LLM Provider:[/bold] [cyan]{describe_provider(config)}[/cyan]")
+    retrieval = "TF-IDF only" if config.retrieval_mode == "tfidf" or not fastembed_available() else (
+        f"hybrid ({config.embedding_model}" + (f" + {config.reranker_model} reranker)" if config.reranker_model else ")")
+    )
+    console.print(f"[bold]Retrieval:[/bold] [cyan]{retrieval}[/cyan]")
     if config.provider == LLMProviderType.MOCK:
         console.print(
             "[bold yellow]Mock mode: no LLM is called. Briefing and answers are placeholders; "

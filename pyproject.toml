@@ -36,6 +36,10 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
 ]
+# Local dense retrieval + reranking (ONNX on CPU, no PyTorch). Without it, retrieval is TF-IDF only.
+embeddings = [
+    "fastembed>=0.5.0",
+]
 
 [project.scripts]
 arxiv-digest = "arxiv_digest.cli:main"

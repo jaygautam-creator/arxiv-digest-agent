@@ -12,7 +12,7 @@ import re
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import QACitation, QAResponse, TextChunk
-from arxiv_digest.nodes.vector_store import LocalVectorStore, get_vector_store, register_vector_store
+from arxiv_digest.nodes.vector_store import build_vector_store, get_vector_store, register_vector_store, retrieve
 from arxiv_digest.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def format_context_chunks(chunks_with_scores: list[tuple[TextChunk, float]]) -> 
 
     for idx, (chunk, score) in enumerate(chunks_with_scores, 1):
         formatted_texts.append(
-            f"[Source {idx}] (Section: {chunk.section_heading}, Page: {chunk.page_number}, Relevance: {score:.2f}):\n"
+            f"[Source {idx}] (Section: {chunk.section_heading}, Page: {chunk.page_label}, Relevance: {score:.2f}):\n"
             f"{chunk.text}\n"
         )
         # Extract a representative 100-character excerpt
@@ -63,6 +63,7 @@ def format_context_chunks(chunks_with_scores: list[tuple[TextChunk, float]]) -> 
                 chunk_id=chunk.chunk_id,
                 section=chunk.section_heading,
                 page=chunk.page_number,
+                page_label=chunk.page_label,
                 excerpt=excerpt,
                 relevance_score=round(score, 3),
             )
@@ -83,7 +84,7 @@ def answer_question(
     if not store:
         if state.chunks:
             # Resumed session: rebuild the index from persisted chunks once, then reuse it.
-            store = LocalVectorStore(chunks=state.chunks)
+            store = build_vector_store(state.chunks, config)
             register_vector_store(state.session_id, store)
         else:
             return QAResponse(
@@ -95,11 +96,7 @@ def answer_question(
             )
 
     # Vector search with threshold
-    retrieved = store.search(
-        query=question,
-        top_k=config.retrieval_top_k,
-        min_threshold=config.min_similarity_threshold,
-    )
+    retrieved = retrieve(store, question, config)
 
     # Anti-Hallucination Guard: If no chunks meet minimum similarity threshold
     if not retrieved:
@@ -127,9 +124,10 @@ def answer_question(
         f"If the Context does not contain the answer, begin your reply with '{REFUSAL_MARKER}' and explain in one "
         "sentence what is missing. "
         "Never extrapolate or hallucinate outside the retrieved text. "
-        "The context is extracted from a PDF, so tables appear as flattened runs of numbers. Quote a table value "
-        "only when the text makes its row (method, model) and column unambiguous, and name that row and model; "
-        "otherwise say the table could not be read reliably. Prefer numbers stated in prose."
+        "The context is extracted from a PDF. Tables appear as one row per line, cells separated by ' | ', with "
+        "the row label first; column headers may be missing. Quote a table value only when its row and column "
+        "are unambiguous from the surrounding text, and name the row, model and benchmark; otherwise say the "
+        "table could not be read reliably. Prefer numbers stated in prose."
     )
 
     user_prompt = f"""PAPER: {paper_title}

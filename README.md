@@ -23,9 +23,10 @@ An autonomous, stateful research agent designed to streamline literature review 
   - [Free-Tier Rate Limits](#free-tier-rate-limits)
 - [3. CLI Usage & Commands](#3-cli-usage--commands)
 - [4. Example Run](#4-example-run)
-- [5. Design Decisions & Tradeoffs](#5-design-decisions--tradeoffs)
-- [6. Running Tests](#6-running-tests)
-- [7. Project Directory Structure](#7-project-directory-structure)
+- [5. Retrieval Evaluation](#5-retrieval-evaluation)
+- [6. Design Decisions & Tradeoffs](#6-design-decisions--tradeoffs)
+- [7. Running Tests](#7-running-tests)
+- [8. Project Directory Structure](#8-project-directory-structure)
 
 ---
 
@@ -124,21 +125,23 @@ class AgentState(BaseModel):
 4. **`fetch_and_parse`**:
    - Streams the PDF from arXiv with local disk caching (`data/cache/{arxiv_id}.pdf`).
    - Uses PyMuPDF font information to detect headings: bold lines at body size or larger matching `3`, `3.2 Title`, or a number and title on separate lines, which is how LaTeX renders them. Subsections keep their parent path (`4 Experiments › 4.2 Experimental Results`), and references are split into individual entries.
+   - Rebuilds table rows from line positions. LaTeX tables put each cell on its own line, so cells that share a baseline are joined as `row label | v1 | v2 …`, one row per line. Without this, a table came out as one run of numbers, and the LLM attributed values to the wrong rows.
    - Falls back to `pypdf` if PyMuPDF fails, and to the arXiv abstract if the PDF cannot be downloaded or has no text layer (e.g. scanned images).
 5. **`chunk_and_embed`**:
    - Chunks never cross a section boundary, and the References section is not indexed.
-   - Packs sentences into chunks of about 800 characters with a 150-character overlap.
-   - Tags each chunk with its section path and an approximate page number for citations.
+   - Packs sentences into chunks of about 800 characters with a 150-character overlap. Table rows are kept whole, one per line.
+   - Tags each chunk with its section path and its exact page range (e.g. `pp. 21–22`), taken from the PDF block each sentence came from.
 6. **`vector_indexing`**:
-   - Builds a local vector store of sparse TF-IDF vectors (sublinear term frequency, smoothed IDF, stopwords removed) searched by cosine similarity in NumPy. These are lexical vectors, not neural embeddings (see Design Decisions).
-   - Persists the chunks to disk, and the index is rebuilt from them when a session is resumed.
+   - **Hybrid mode** (default when the `embeddings` extra is installed): embeds chunks with `BAAI/bge-small-en-v1.5`, fuses the embedding ranking with a TF-IDF ranking (reciprocal rank fusion), and reranks the top 20 with the `ms-marco-MiniLM-L-6-v2` cross-encoder. Both models run locally on CPU through ONNX, with no PyTorch.
+   - **TF-IDF mode** (fallback): sparse TF-IDF vectors (sublinear term frequency, smoothed IDF, stopwords removed) searched by cosine similarity in NumPy.
+   - Chunk embeddings are saved in the session file, so resuming a session doesn't re-embed.
 7. **`summarize_briefing`**:
    - Builds a context of about 14k characters from the abstract plus the main-body introduction, method, results, limitations and conclusion sections. The budget is shared fairly between sections, and appendices and flattened tables are left out.
    - Validates the LLM's JSON against the `ExecutiveBriefing` schema and re-asks once with the validation error if it is malformed. Title, authors, ID and date always come from arXiv, never from the LLM.
    - If the LLM fails outright, emits an abstract-only briefing whose other fields say "Not available" rather than inventing content.
 8. **`qa_loop`**:
    - Interactive CLI REPL (not a graph node; it reads the shared state the graph produced).
-   - Retrieves the top 4 chunks. If none scores at least 0.15, it refuses without calling the LLM.
+   - Retrieves the top 4 chunks. If the question isn't similar enough to any chunk, it refuses without calling the LLM: embedding similarity < 0.55 in hybrid mode, TF-IDF cosine < 0.05 otherwise. Both thresholds were chosen from the evaluation set.
    - Otherwise the LLM answers only from those chunks, citing `[Source n]`. If they don't contain the answer, it must start its reply with `NOT IN PAPER:`, and the answer is shown as not grounded.
    - Every turn is appended to `qa_history`, and the session file is re-saved.
 
@@ -158,14 +161,14 @@ cd arxiv-digest-agent
 
 # with uv
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,embeddings]"
 
 # or with pip
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,embeddings]"
 ```
 
-The LLM providers are called over plain HTTPS with `httpx`, so no vendor SDKs are needed.
+The `embeddings` extra (`fastembed`, ONNX Runtime) enables hybrid retrieval. Its two models (~200 MB) download on first use into `data/models/`. Leave the extra out for a lighter TF-IDF-only install; everything still works, with weaker retrieval (see [Retrieval Evaluation](#5-retrieval-evaluation)). The LLM providers are called over plain HTTPS with `httpx`, so no vendor SDKs are needed.
 
 ### Configuration & Free-Tier LLMs
 No paid API keys are required. Copy the template and add one free key:
@@ -230,6 +233,8 @@ python -m arxiv_digest "1706.03762" --mock
 Full, unedited transcript with the pipeline trace, all candidates and verification notes: **[`examples/sample_qa_run.md`](examples/sample_qa_run.md)**. The briefing artifacts are [`examples/kv_cache_briefing.md`](examples/kv_cache_briefing.md) and [`.json`](examples/kv_cache_briefing.json).
 
 **Input:** `"recent work on KV-cache compression for LLMs"` (Groq `openai/gpt-oss-120b`, 2026-09-18).
+
+*This run was recorded with TF-IDF retrieval, before hybrid retrieval, table reconstruction and exact page ranges were added. The briefing doesn't depend on retrieval. The QA citations would differ today; for example, the fine-tuning question below is one the evaluation still marks as a miss in both modes.*
 arXiv returned 5 candidates (2024–2026). The ranking node selected the most recent directly relevant one, **GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs** ([2605.31105](https://arxiv.org/abs/2605.31105)). The parser found 33 sections, the chunker produced 137 chunks, and the whole run took about 8 s.
 
 **Briefing (excerpt):**
@@ -263,20 +268,60 @@ Ask Paper > Does GRKV require fine-tuning the model?
 ```
 Ask Paper > What is the capital of France?
 ```
-> *[Refused by similarity gate: best chunk scored 0.0 < 0.15, so no LLM call was made]*
+> *[Refused by similarity gate: best chunk scored 0.0, so no LLM call was made]*
 > I cannot answer this question based on the paper. The document does not contain relevant information regarding this query […]
 
 ---
 
-## 5. Design Decisions & Tradeoffs
+## 5. Retrieval Evaluation
+
+`evals/questions.json` holds 33 hand-labelled questions over 5 papers:
+- **Lexical** (11): the question reuses the paper's wording.
+- **Paraphrase** (16): the same kind of fact, asked in different words.
+- **Unanswerable** (2): on-topic, but the paper doesn't say.
+- **Out-of-scope** (4): unrelated to the paper.
+
+Each answerable question lists evidence text that must appear in a retrieved chunk, and the runner checks that every evidence string really exists in the parsed paper. It builds the chunks through the agent's own parse → chunk → index nodes.
+
+```bash
+python evals/run_eval.py            # retrieval + gate (no LLM calls)
+python evals/run_eval.py --llm      # also scores the LLM's answers (~35 calls; mind free-tier quotas)
+```
+
+**Retrieval** (final code, top 4 chunks):
+
+| Configuration | Answerable: evidence retrieved | Answerable: wrongly refused | Off-topic refused |
+|---|---|---|---|
+| TF-IDF, gate 0.15 (original) | 11/27 | 8/27 | 4/4 |
+| TF-IDF, gate 0.05 (TF-IDF default now) | 14/27 | 0/27 | 4/4 |
+| **Hybrid + reranker (default with the extra)** | **20/27** | **0/27** | **4/4** |
+
+Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so top-k stays at 4.
+
+**End-to-end answers** (Groq `gpt-oss-120b`; correct = grounded and contains the expected value):
+
+| Configuration | Answerable answered correctly | Unanswerable + off-topic refused |
+|---|---|---|
+| TF-IDF, gate 0.05 (final code) | 17/27 | 6/6 |
+| Hybrid + reranker (revision before column headers were added) | 18/27 | 6/6 |
+
+**What this says, honestly:**
+- Hybrid retrieval clearly finds more evidence (20 vs 14 of 27). On this small set, that shows up as only a one-question gain in final answers.
+- The gap is smaller than the retrieval gap for two reasons. The strict evidence strings undercount TF-IDF: it sometimes retrieves a differently worded passage that still answers. And some hybrid losses were answer errors rather than retrieval errors: reading the wrong table column (fixed since by attaching column headers), and one answer given from general knowledge.
+- The hybrid end-to-end run on the final code didn't finish, because the eval runs used up the day's free-tier quota. Re-run it with `RETRIEVAL_MODE=hybrid python evals/run_eval.py --llm`.
+- With 27 answerable questions, a one- or two-question difference is within noise. Treat these numbers as evidence for the large effects (the gate calibration, 14 → 20 retrieval), not the small ones.
+
+---
+
+## 6. Design Decisions & Tradeoffs
 
 **Explicit graph in plain Python.** Each stage is a function `AgentState → AgentState` in `nodes/`, and `graph.py` wires them in order with one conditional edge (ranking runs only for topic searches with more than one candidate). An error recorded by a node stops the graph at that point. I chose this over LangGraph because a linear pipeline with one branch doesn't need a framework: each node stays unit-testable, and the whole control flow is visible in about 100 lines. The QA loop sits outside the graph because it is interactive. It reads the same state object.
 
-**State and persistence.** `AgentState` is a Pydantic model holding the query, candidates, selected paper, parsed sections, chunks, briefing, QA history and a per-node execution log. It is saved to `data/sessions/session_<id>.json` when the graph finishes and after every QA turn, so `--session` resumes a conversation after a restart. The vector index is not serialized separately; it is rebuilt from the persisted chunks in milliseconds.
+**State and persistence.** `AgentState` is a Pydantic model holding the query, candidates, selected paper, parsed sections, chunks, briefing, QA history and a per-node execution log. It is saved to `data/sessions/session_<id>.json` when the graph finishes and after every QA turn, so `--session` resumes a conversation after a restart. Chunks are saved with their embeddings, so resuming rebuilds the index without re-embedding.
 
-**Lexical retrieval instead of neural embeddings.** The vector store is TF-IDF plus cosine similarity in NumPy. There are no model downloads and no native dependencies, it is deterministic, and searching 137 chunks takes well under 1 ms (the index builds in about 7 ms). The cost is vocabulary mismatch: in the example, a question about "fine-tuning" missed the paper's "training-free". I reduced false matches by removing stopwords. Without that, "What is the capital of France?" scored 0.18 on "what/is/the" and passed the gate. I also split hyphenated terms so "LLaMA-3-8B" matches "LLaMA-3-Instruct-8B". A small local embedding model (e.g. `bge-small`) fused with TF-IDF would be the next step.
+**Retrieval: measured, then chosen.** I started with TF-IDF only: no model downloads, deterministic, sub-millisecond. Before changing it, I built a 33-question evaluation set, and the first finding wasn't about ranking at all. The TF-IDF gate (0.15) refused 8 of 27 answerable questions, because TF-IDF scores drop whenever the wording differs from the paper. After stopword removal, off-topic questions score exactly 0, so recalibrating the gate to 0.05 fixed that without embeddings. Embeddings then earned their place on ranking. Alone, they did *worse* than TF-IDF on these number- and name-heavy papers, but fusing both rankings (RRF) and reranking with a cross-encoder found the answer for 20/27 questions, against 14/27 for TF-IDF. The embedding gate (0.55) also separates off-topic from on-topic questions semantically instead of relying on zero word overlap. The models are an optional extra, so the base install stays light. The TF-IDF side keeps its earlier fixes: stopwords are removed, and hyphenated terms are split so "LLaMA-3-8B" matches "LLaMA-3-Instruct-8B".
 
-**Grounding in layers.** (1) Paper metadata (title, authors, ID, date) is copied from arXiv by code, and the LLM's values for those fields are discarded. (2) A similarity gate refuses out-of-scope questions before any LLM call. (3) The QA prompt allows only the retrieved passages and requires a `NOT IN PAPER:` marker for refusals, which the code checks instead of guessing from wording. (4) Every answer lists the chunks it was given. (5) The summarizer never sees flattened tables. On one run, Groq's model mixed LongBench and RULER scores from table rows, so tables are excluded from the briefing context and stay available to QA. The QA prompt tells the model to quote a table value only when its row and column are unambiguous.
+**Grounding in layers.** (1) Paper metadata (title, authors, ID, date) is copied from arXiv by code, and the LLM's values for those fields are discarded. (2) A similarity gate refuses out-of-scope questions before any LLM call. (3) The QA prompt allows only the retrieved passages and requires a `NOT IN PAPER:` marker for refusals, which the code checks instead of guessing from wording. (4) Every answer lists the chunks it was given. (5) Tables are rebuilt row by row (`label | v1 | v2`) so values stay attached to their row. The summarizer still leaves tables out: on one run, Groq's model mixed LongBench and RULER scores from table text, and the paper's prose states the headline numbers unambiguously. QA can use tables, and its prompt says to quote a table value only when the row and column are clear.
 
 **Handling the vague and failure cases.**
 - **Zero candidates:** relax to the two leading terms, then accept any term.
@@ -285,33 +330,36 @@ Ask Paper > What is the capital of France?
 - **LLM problems:** retries with backoff and Gemini model fallback. Malformed JSON → one corrective re-ask. Total failure → an abstract-only briefing that says so.
 
 **What I would do with more time.**
-1. Hybrid retrieval (TF-IDF + local dense embeddings) with a cross-encoder reranker.
-2. Table extraction that keeps structure (PyMuPDF `find_tables` or a layout model), so numeric QA doesn't rely on flattened text.
-3. Exact page numbers per chunk. Pages are currently interpolated within a section.
-4. A small evaluation set of question/answer pairs per paper, to measure grounding instead of spot-checking it.
+1. Grow the evaluation set. 33 questions over 5 papers is enough to show large effects (like the gate), not small ones, and both gate thresholds were chosen on the same set they are reported on.
+2. Attach column headers to table rows. They are often rotated or in a separate block, so rows currently carry only their row label.
+3. A second retrieval pass for questions the LLM marks `NOT IN PAPER`, e.g. rewriting the query with the model, since some of those are retrieval misses rather than true absences.
+4. OCR (e.g. Tesseract) for scanned PDFs instead of falling back to the abstract.
 
 **Known limitations.**
-- Retrieval is lexical, so synonyms and paraphrases can miss (see the example).
+- Retrieval still misses about a quarter of answerable questions in the eval set, mostly paraphrases whose answer sits in a single sentence ("How large is the implementation?" → "about 3K lines of code"). The agent then says the passages don't answer the question, which is correct behavior but not a useful answer.
+- When retrieval misses, the model occasionally answers from general knowledge anyway (in the eval, it described "standard softmax attention" instead of saying the kernel wasn't in the passages). The refusal rules reduce this but don't eliminate it.
+- On-topic questions the paper doesn't answer ("GRKV on ImageNet") pass the similarity gate. They are caught by the LLM's `NOT IN PAPER` rule, not by retrieval.
+- Hybrid mode adds about 5–30 s per paper for the first embedding pass (CPU) and ~0.5 s per question for reranking.
 - Heading detection assumes LaTeX-style bold numbered headings. Unusual templates fall back to fewer, coarser sections. Floating tables can be attributed to the neighbouring section.
 - Scanned PDFs without a text layer are summarized from the abstract only. No OCR is used.
 - LLM output is not perfect. The example briefing contains one wrong method detail, which is why the briefing is a starting point for reading and not a substitute for it.
 
 ---
 
-## 6. Running Tests
+## 7. Running Tests
 
-34 offline tests use a mock LLM and a synthetic PDF, so no network or keys are needed:
+44 offline tests use a mock LLM, a fake embedder and a synthetic PDF, so no network, keys or model downloads are needed:
 
 ```bash
 pytest tests/ -q
-# 34 passed in 0.3s
+# 44 passed in 0.3s
 ```
 
-They cover query parsing, Atom parsing and query relaxation, heading detection on a generated PDF, chunking, retrieval and the stopword gate, grounded and refused QA, provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
+They cover query parsing, Atom parsing and query relaxation, heading detection and table-row reconstruction, page-accurate chunking, TF-IDF and hybrid retrieval (gate, fusion, reranking), grounded and refused QA, provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
 
 ---
 
-## 7. Project Directory Structure
+## 8. Project Directory Structure
 
 ```
 .
@@ -319,6 +367,9 @@ They cover query parsing, Atom parsing and query relaxation, heading detection o
 ├── pyproject.toml
 ├── .env.example                 # configuration template (copy to .env)
 ├── docs/DEVELOPER_GUIDE.md      # conventions for contributors
+├── evals/
+│   ├── questions.json           # 33 labelled questions over 5 papers
+│   └── run_eval.py              # retrieval + end-to-end answer evaluation
 ├── examples/
 │   ├── sample_qa_run.md         # full example run with verification notes
 │   ├── kv_cache_briefing.md     # generated briefing (Markdown)
@@ -330,13 +381,14 @@ They cover query parsing, Atom parsing and query relaxation, heading detection o
 │   ├── state.py                 # AgentState + session persistence
 │   ├── models.py                # Pydantic schemas (ExecutiveBriefing, TextChunk, ...)
 │   ├── config.py                # .env loading and provider selection
+│   ├── embeddings.py            # optional local embedder + reranker (ONNX)
 │   ├── nodes/
 │   │   ├── query_parser.py      # intent + arXiv ID/URL parsing
 │   │   ├── arxiv_client.py      # Atom API client + query relaxation
 │   │   ├── ranker.py            # candidate selection (LLM + recency-aware fallback)
-│   │   ├── pdf_parser.py        # download, heading detection, references
+│   │   ├── pdf_parser.py        # download, headings, table rows, references
 │   │   ├── chunker.py           # section-bounded chunking
-│   │   ├── vector_store.py      # TF-IDF index + cosine search
+│   │   ├── vector_store.py      # TF-IDF + dense hybrid search, gate, reranking
 │   │   ├── summarizer.py        # briefing generation and validation
 │   │   └── qa_agent.py          # grounded QA with similarity gate
 │   └── llm/
@@ -345,7 +397,7 @@ They cover query parsing, Atom parsing and query relaxation, heading detection o
 │       ├── gemini_client.py     # with model fallback
 │       ├── ollama_client.py
 │       └── mock_client.py       # offline placeholder provider
-└── tests/                       # 34 offline tests
+└── tests/                       # 44 offline tests
 ```
 
 ---

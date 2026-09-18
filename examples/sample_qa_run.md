@@ -3,7 +3,7 @@
 **Author:** Jay Gautam (<jaygautam561@gmail.com>) for 8byte
 **Recorded:** 2026-09-18 · **Provider:** Groq `openai/gpt-oss-120b` (free tier)
 
-Everything below is unedited output from a real run of the current code. The briefing is also
+Everything below is unedited output from a real run. It was recorded with TF-IDF retrieval (gate 0.15), before hybrid retrieval, table-row reconstruction and exact page ranges were added; see the README's Retrieval Evaluation for how those change QA. The briefing is also
 saved as [`kv_cache_briefing.md`](kv_cache_briefing.md) / [`kv_cache_briefing.json`](kv_cache_briefing.json).
 arXiv search results change over time, so re-running the same topic may select a different paper.
 

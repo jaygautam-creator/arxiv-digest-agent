@@ -10,9 +10,10 @@ This guide is for working on the code. For usage, architecture and design tradeo
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-cp .env.example .env        # add GROQ_API_KEY and/or GEMINI_API_KEY for live runs
-pytest tests/ -q            # offline; no keys or network needed
+uv pip install -e ".[dev,embeddings]"   # drop ",embeddings" for a TF-IDF-only install
+cp .env.example .env                     # add GROQ_API_KEY and/or GEMINI_API_KEY for live runs
+pytest tests/ -q                         # offline; no keys, network or model downloads
+python evals/run_eval.py                 # retrieval eval (downloads the 5 eval papers once)
 ```
 
 ## 2. Code map
@@ -23,6 +24,7 @@ pytest tests/ -q            # offline; no keys or network needed
 | `state.py` | `AgentState` (shared state) and JSON session save/load |
 | `models.py` | Pydantic schemas: `PaperMetadata`, `PaperSection`, `TextChunk`, `ExecutiveBriefing`, `QAResponse` |
 | `config.py` | `.env` loading and provider selection (`LLM_PROVIDER`, keys, models, retrieval parameters) |
+| `embeddings.py` | Optional local embedder and cross-encoder reranker (fastembed/ONNX), loaded once per process |
 | `nodes/*.py` | One module per graph stage; each exposes a `*_node(state, ...) -> AgentState` function |
 | `llm/base.py` | `BaseLLM` interface and `post_with_retry` (backoff on 429/5xx, honours `Retry-After`) |
 | `llm/*_client.py` | Groq, Gemini (with model fallback), Ollama, and an offline mock |
@@ -50,8 +52,14 @@ and `describe_provider`.
 **Adding a graph node:** write `nodes/<name>.py` with a `<name>_node(state, ...)` function, add any new fields to
 `AgentState`, and insert the call (with its progress notification) in `graph.py`.
 
-**Tuning retrieval:** `CHUNK_SIZE`, `CHUNK_OVERLAP`, `RETRIEVAL_TOP_K` and `MIN_SIMILARITY_THRESHOLD` are read from `.env`.
-Check changes against a real paper as well as the unit tests. The out-of-scope gate is sensitive to the threshold.
+**Tuning retrieval:** chunking, top-k, thresholds and models are read from `.env` (see `.env.example`).
+Measure every change with `python evals/run_eval.py` in both `RETRIEVAL_MODE=tfidf` and `hybrid`,
+and add `--llm` to score end-to-end answers. The gate thresholds were chosen from the eval set's score
+distribution, so re-check them if you change the embedding model or chunk size.
+
+**Extending the eval set:** add entries to `evals/questions.json`. Evidence strings must appear verbatim
+in the parsed paper (the runner checks this and stops if one doesn't). Include paraphrased and unanswerable
+questions, not just ones that reuse the paper's wording.
 
 ## 5. Testing
 
