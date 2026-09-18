@@ -59,3 +59,5 @@ data/sessions/
 *.log
 scratch/
 session_logs/
+
+CLAUDE.md
