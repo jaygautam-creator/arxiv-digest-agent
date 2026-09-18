@@ -299,14 +299,15 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 | Configuration | Answerable answered correctly | Unanswerable + off-topic refused |
 |---|---|---|
-| TF-IDF, gate 0.05 (final code) | 17/27 | 6/6 |
-| Hybrid + reranker (revision before column headers were added) | 18/27 | 6/6 |
+| TF-IDF, gate 0.05 (run before table column headers were added) | 17/27 | 6/6 |
+| Hybrid + reranker, before table column headers | 18/27 | 6/6 |
+| **Hybrid + reranker, final code** | **21/27** | **6/6** |
 
 **What this says, honestly:**
-- Hybrid retrieval clearly finds more evidence (20 vs 14 of 27). On this small set, that shows up as only a one-question gain in final answers.
-- The gap is smaller than the retrieval gap for two reasons. The strict evidence strings undercount TF-IDF: it sometimes retrieves a differently worded passage that still answers. And some hybrid losses were answer errors rather than retrieval errors: reading the wrong table column (fixed since by attaching column headers), and one answer given from general knowledge.
-- The hybrid end-to-end run on the final code didn't finish, because the eval runs used up the day's free-tier quota. Re-run it with `RETRIEVAL_MODE=hybrid python evals/run_eval.py --llm`.
-- With 27 answerable questions, a one- or two-question difference is within noise. Treat these numbers as evidence for the large effects (the gate calibration, 14 → 20 retrieval), not the small ones.
+- Hybrid retrieval finds more evidence (20 vs 14 of 27). On the final code it answers 21 of 27 correctly, and it refuses every unanswerable and off-topic question.
+- Table column headers mattered as well: the same hybrid setup went from 18 to 21, partly because the model stopped reading the wrong table column. The TF-IDF run came before that change, so part of the 17 → 21 gap comes from better table parsing, not only from retrieval.
+- Of the 6 remaining misses, 5 are honest "the passages don't answer this" responses to paraphrased questions whose answer wasn't retrieved. One is an answer given from general knowledge (the attention-kernel question).
+- 27 answerable questions is a small set, and the gate thresholds were chosen on it. Treat these numbers as evidence for the large effects (gate calibration, 14 → 20 retrieval, 17 → 21 answers), not for small differences.
 
 ---
 
