@@ -82,3 +82,12 @@ def test_anti_hallucination_refusal():
     assert response.is_grounded is False
     assert len(response.citations) == 0
     assert "cannot answer" in response.answer.lower() or "not contain" in response.answer.lower()
+
+
+def test_refusal_detection_uses_marker_and_phrases():
+    from arxiv_digest.nodes.qa_agent import is_refusal
+
+    assert is_refusal("NOT IN PAPER: the sources never discuss fine-tuning.")
+    assert is_refusal("**NOT IN PAPER:** the sources never discuss fine-tuning.")
+    assert is_refusal("The provided excerpts do not contain any statement about this.")
+    assert not is_refusal("GRKV raises the average score from 27.44 to 29.09 [Source 2].")

@@ -17,6 +17,28 @@ from arxiv_digest.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+# Appendix headings are lettered ("B Additional Results", "C.1 ..."); the main body is enough for a briefing.
+APPENDIX_HEADING = re.compile(r"^[A-H](?:\.\d+)*\s")
+
+
+def is_table_like(paragraph: str, threshold: float = 0.4) -> bool:
+    """True for flattened table text: a paragraph where numeric tokens dominate."""
+    tokens = paragraph.split()
+    if len(tokens) < 8:
+        return False
+    numeric = sum(1 for t in tokens if re.fullmatch(r"[\d.,%×x()↑↓+\-–/]+", t))
+    return numeric / len(tokens) >= threshold
+
+
+def prose_only(text: str) -> str:
+    """Drop flattened tables and stray table/figure labels (fragments under four words).
+
+    A table's row/column structure is lost in extraction, which invites misattributed numbers.
+    """
+    return "\n\n".join(
+        p for p in text.split("\n\n") if len(p.split()) >= 4 and not is_table_like(p)
+    )
+
 
 def build_summarization_context(state: AgentState, max_chars: int = 14000) -> str:
     """Assemble the most critical sections of the paper into an executive context window."""
@@ -33,35 +55,50 @@ def build_summarization_context(state: AgentState, max_chars: int = 14000) -> st
         f"Abstract:\n{paper.abstract}\n",
     ]
 
-    # Prioritize key sections: Intro, Method, Results, Limitations
-    priority_keywords = ["intro", "method", "approach", "architect", "result", "eval", "limit", "discuss"]
-    
-    selected_sections = []
-    for section in parsed.sections:
-        heading_lower = section.heading.lower()
-        if any(kw in heading_lower for kw in priority_keywords):
-            selected_sections.append(section)
+    # Prioritize the sections a briefing needs. Headings carry their parent path
+    # ("5 Results › 5.2 ..."), so subsections match via their parent's name.
+    priority_keywords = [
+        "intro", "method", "approach", "architect", "design", "result", "experiment",
+        "eval", "limit", "discuss", "conclu",
+    ]
+    main_body = [s for s in parsed.sections if not APPENDIX_HEADING.match(s.heading)]
+    selected_sections = [
+        s for s in main_body if any(kw in s.heading.lower() for kw in priority_keywords)
+    ] or main_body[:4] or parsed.sections[:4]
 
-    if not selected_sections:
-        selected_sections = parsed.sections[:4]
-
+    # Share the budget fairly so a long introduction cannot crowd out results and limitations;
+    # budget a short section leaves unused rolls over to the ones after it.
     remaining_budget = max_chars - sum(len(p) for p in context_parts)
-
-    for sec in selected_sections:
-        if remaining_budget <= 500:
+    for idx, sec in enumerate(selected_sections):
+        share = remaining_budget // (len(selected_sections) - idx)
+        if share < 200:
             break
-        sec_text = sec.content[:remaining_budget].strip()
+        sec_text = prose_only(sec.content)[:share].strip()
         context_parts.append(f"--- Section: {sec.heading} (pp. {sec.page_start}-{sec.page_end}) ---\n{sec_text}\n")
         remaining_budget -= len(sec_text)
 
     return "\n\n".join(context_parts)
 
 
-def parse_briefing_json(raw_json: str, state: AgentState) -> ExecutiveBriefing:
-    """Robustly parse LLM response into strongly-typed ExecutiveBriefing."""
-    paper = state.selected_paper
+UNAVAILABLE = "Not available: {reason}. See the abstract above and use QA mode for details."
 
-    # Strip potential markdown fences
+
+def _with_arxiv_metadata(data: dict, state: AgentState) -> dict:
+    """Overwrite identifying fields with arXiv's metadata; the LLM is never trusted for these."""
+    paper = state.selected_paper
+    if paper:
+        data.update(
+            title=paper.title,
+            authors=paper.authors,
+            arxiv_id=paper.arxiv_id,
+            publish_date=paper.published_date,
+            link=paper.abs_url,
+        )
+    return data
+
+
+def parse_briefing_json(raw_json: str, state: AgentState) -> ExecutiveBriefing:
+    """Parse the LLM response into an ExecutiveBriefing; raises ValueError if it is unusable."""
     cleaned = raw_json.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
@@ -73,51 +110,53 @@ def parse_briefing_json(raw_json: str, state: AgentState) -> ExecutiveBriefing:
 
     try:
         data = json.loads(cleaned)
-        # Ensure paper identifiers are preserved
-        if paper:
-            data["title"] = data.get("title") or paper.title
-            data["authors"] = data.get("authors") or paper.authors
-            data["arxiv_id"] = data.get("arxiv_id") or paper.arxiv_id
-            data["publish_date"] = data.get("publish_date") or paper.published_date
-            data["link"] = data.get("link") or paper.abs_url
-
-        return ExecutiveBriefing.model_validate(data)
+        return ExecutiveBriefing.model_validate(_with_arxiv_metadata(data, state))
     except Exception as e:
-        logger.warning(f"JSON parsing failed ({e}). Generating fallback structured briefing...")
+        raise ValueError(f"LLM returned an unusable briefing: {e}") from e
 
-    # Fallback instantiation
-    title = paper.title if paper else "Research Paper Analysis"
-    authors = paper.authors if paper else ["Unknown Authors"]
-    arxiv_id = paper.arxiv_id if paper else "unknown"
-    publish_date = paper.published_date if paper else "2024"
-    link = paper.abs_url if paper else f"https://arxiv.org/abs/{arxiv_id}"
-    abstract = paper.abstract if paper else ""
 
-    return ExecutiveBriefing(
-        title=title,
-        authors=authors,
-        arxiv_id=arxiv_id,
-        publish_date=publish_date,
-        link=link,
-        summary_plain_english=abstract or "A comprehensive investigation of the proposed method and empirical findings.",
-        problem_statement="Investigates computational, algorithmic, or empirical bottlenecks in existing approaches.",
-        method_approach=[
-            "Proposes a novel formulation to address baseline inefficiencies.",
-            "Evaluates performance across benchmark datasets against competing models."
-        ],
-        key_results_claims=[
-            "Demonstrates competitive performance with reduced computational overhead.",
-            "Validates theoretical assertions via empirical experiments."
-        ],
-        limitations=[
-            "Evaluation bounded to specific benchmark distributions.",
-            "Further analysis required on extreme scaling regimes."
-        ],
-        suggested_followup_questions=[
-            "How does this method generalize to out-of-distribution inputs?",
-            "What is the quantitative tradeoff between latency and accuracy?"
-        ]
+def degraded_briefing(state: AgentState, reason: str) -> ExecutiveBriefing:
+    """Metadata-and-abstract briefing used when the LLM fails.
+
+    Every generated field says plainly that it is unavailable instead of inventing content.
+    """
+    paper = state.selected_paper
+    missing = UNAVAILABLE.format(reason=reason)
+    data = _with_arxiv_metadata(
+        {
+            "summary_plain_english": paper.abstract if paper and paper.abstract else missing,
+            "problem_statement": missing,
+            "method_approach": [missing],
+            "key_results_claims": [missing],
+            "limitations": [missing],
+            "suggested_followup_questions": [
+                "What problem does this paper address?",
+                "What are the main results?",
+                "What limitations do the authors acknowledge?",
+            ],
+        },
+        state,
     )
+    return ExecutiveBriefing.model_validate(data)
+
+
+def _first_line(error: Exception) -> str:
+    return str(error).strip().splitlines()[0][:200]
+
+
+def _generate_briefing(llm: BaseLLM, prompt: str, system_prompt: str, state: AgentState) -> ExecutiveBriefing:
+    """Ask for the briefing; if the JSON is malformed, re-ask once with the validation error."""
+    raw_output = llm.generate(prompt=prompt, system_prompt=system_prompt, json_mode=True)
+    try:
+        return parse_briefing_json(raw_output, state)
+    except ValueError as e:
+        logger.warning("Briefing JSON invalid (%s); asking the model to correct it.", _first_line(e))
+        retry_prompt = (
+            f"{prompt}\n\nYour previous response did not match the schema: {e}\n"
+            "Return only the JSON object, with exactly the keys shown and every list containing plain strings."
+        )
+        raw_output = llm.generate(prompt=retry_prompt, system_prompt=system_prompt, json_mode=True)
+        return parse_briefing_json(raw_output, state)
 
 
 def summarize_briefing_node(state: AgentState, llm: BaseLLM) -> AgentState:
@@ -135,6 +174,8 @@ def summarize_briefing_node(state: AgentState, llm: BaseLLM) -> AgentState:
 
     prompt = f"""You are a principal AI researcher preparing an executive briefing for busy engineering leaders.
 Synthesize the provided research paper into a high-signal, rigorous briefing.
+Report only numbers stated in the text, and attribute each one to the exact method, model and benchmark
+the text gives for it. If that attribution is not explicit, describe the result without the number.
 
 PAPER CONTENT:
 {context}
@@ -169,20 +210,17 @@ Respond ONLY in valid JSON conforming to this schema:
 }}
 """
 
+    system_prompt = "You are a rigorous AI research scientist. You always return valid JSON and never skip limitations."
     try:
-        raw_output = llm.generate(
-            prompt=prompt,
-            system_prompt="You are a rigorous AI research scientist. You always return valid JSON and never skip limitations.",
-            json_mode=True,
-        )
-        briefing = parse_briefing_json(raw_output, state)
-        state.briefing = briefing
-        state.is_complete = True
-        msg = f"Generated executive briefing for '{briefing.title}'."
-        state.log_step("summarize_briefing", "success", msg, (time.time() - start_time) * 1000)
+        state.briefing = _generate_briefing(llm, prompt, system_prompt, state)
+        status, msg = "success", f"Generated executive briefing for '{state.briefing.title}'."
     except Exception as e:
-        msg = f"Summarization failed: {e}"
-        state.add_error(msg)
-        state.log_step("summarize_briefing", "error", msg, (time.time() - start_time) * 1000)
+        # Degrade to an honest abstract-only briefing so metadata and QA remain usable.
+        logger.warning("Summarization failed (%s); using abstract-only briefing.", _first_line(e))
+        state.briefing = degraded_briefing(state, "the LLM summarization step failed")
+        state.add_warning(f"Summarization failed ({_first_line(e)}); briefing contains arXiv metadata and abstract only.")
+        status, msg = "warning", "Summarization failed; produced abstract-only briefing."
 
+    state.is_complete = True
+    state.log_step("summarize_briefing", status, msg, (time.time() - start_time) * 1000)
     return state

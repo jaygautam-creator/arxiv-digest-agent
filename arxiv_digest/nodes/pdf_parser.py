@@ -71,80 +71,164 @@ def download_pdf(
     return None
 
 
+# A numbered heading label: "3", "3.2", "3.2.1", or an appendix label "A", "B.1".
+SECTION_NUMBER_REGEX = re.compile(r"^(?:\d{1,2}|[A-H])(?:\.\d{1,2}){0,2}\.?$")
+NUMBERED_HEADING_REGEX = re.compile(r"^((?:\d{1,2}|[A-H])(?:\.\d{1,2}){0,2})\.?\s+([A-Z].{1,80})$")
+# Words that signal a heading title wraps onto the next line.
+CONTINUATION_ENDINGS = ("and", "of", "for", "the", "with", "a", "an", "to", "in", "on", "via", "through", "-", ",", ":")
+REFERENCE_START_REGEX = re.compile(r"^\[\d{1,3}\]")
+UNNUMBERED_HEADINGS = {
+    "abstract", "references", "bibliography", "acknowledgments", "acknowledgements",
+    "appendix", "limitations", "conclusion", "conclusions", "discussion", "broader impact",
+}
+
+
+def _is_bold(span: dict) -> bool:
+    font = span.get("font", "")
+    return bool(span.get("flags", 0) & 16) or any(tag in font for tag in ("Bold", "Medi", "Semibold", ".B"))
+
+
+def _read_lines(doc) -> tuple[list[tuple[int, int, str, bool, float]], float]:
+    """Flatten the document into (page, block, text, is_bold, size) lines plus the body font size."""
+    lines = []
+    size_weight: dict[float, int] = {}
+    for page_idx, page in enumerate(doc, start=1):
+        for block_idx, block in enumerate(page.get_text("dict")["blocks"]):
+            for line in block.get("lines", []):
+                spans = [sp for sp in line["spans"] if sp["text"].strip()]
+                if not spans:
+                    continue
+                text = " ".join(sp["text"].strip() for sp in spans)
+                size = round(max(sp["size"] for sp in spans), 1)
+                lines.append((page_idx, block_idx, text, all(_is_bold(sp) for sp in spans), size))
+                size_weight[size] = size_weight.get(size, 0) + len(text)
+    body_size = max(size_weight, key=size_weight.get) if size_weight else 10.0
+    return lines, body_size
+
+
+def detect_heading(
+    lines, i: int, body_size: float, allow_letter_labels: bool = False
+) -> tuple[str, str | None, int] | None:
+    """Return (label, number, lines_consumed) if lines[i] starts a section heading.
+
+    LaTeX papers typically render headings in bold at or above body size, with the
+    number and title either on one line ("3.2 Attention") or on two ("3.2" / "Attention").
+    Requiring bold + body size filters out bold figure labels and table cells. Letter
+    labels ("A", "B.1") are only accepted once the appendix can have started.
+    """
+    _, _, text, bold, size = lines[i]
+    if not bold or size < body_size - 0.6 or len(text) > 90:
+        return None
+
+    def is_number(label: str) -> bool:
+        return bool(SECTION_NUMBER_REGEX.match(label)) and (allow_letter_labels or label[0].isdigit())
+
+    def with_continuation(title: str, j: int) -> tuple[str, int]:
+        """Append wrapped title lines (bold, same size) while the title looks unfinished."""
+        extra = 0
+        while (
+            title.lower().endswith(CONTINUATION_ENDINGS)
+            and j + extra < len(lines)
+            and lines[j + extra][3]
+            and abs(lines[j + extra][4] - size) < 0.6
+            and len(lines[j + extra][2]) <= 80
+        ):
+            nxt = lines[j + extra][2]
+            title = title[:-1] + nxt if title.endswith("-") else f"{title} {nxt}"
+            extra += 1
+        return title, extra
+
+    if is_number(text.rstrip(".")) and i + 1 < len(lines):
+        _, _, nxt, nxt_bold, nxt_size = lines[i + 1]
+        if nxt_bold and nxt_size >= body_size - 0.6 and nxt[:1].isupper() and len(nxt) <= 80:
+            title, extra = with_continuation(nxt, i + 2)
+            return title, text.rstrip("."), 2 + extra
+
+    m = NUMBERED_HEADING_REGEX.match(text)
+    if m and is_number(m.group(1)) and not text.rstrip().endswith((".", ",")):
+        title, extra = with_continuation(m.group(2).strip(), i + 1)
+        return title, m.group(1), 1 + extra
+
+    if text.lower().rstrip(":") in UNNUMBERED_HEADINGS:
+        return text.rstrip(":"), None, 1
+    return None
+
+
 def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str], str]:
-    """Extract structured sections and references using PyMuPDF."""
+    """Extract sections (with subsection paths), references, and full text using PyMuPDF."""
     import pymupdf  # type: ignore
 
     doc = pymupdf.open(str(pdf_path))
+    lines, body_size = _read_lines(doc)
+    page_count = len(doc)
+    doc.close()
+
     sections: list[PaperSection] = []
     references: list[str] = []
-    full_text_parts: list[str] = []
+    ref_block: list[str] = []
+    ref_block_id: tuple[int, int] | None = None
 
-    current_heading = "Introduction"
-    current_content: list[str] = []
-    current_start_page = 1
-
+    heading, start_page = "Front Matter", 1
+    content: list[str] = []  # one paragraph per PDF block
+    content_block: tuple[int, int] | None = None
+    top_level = ""  # e.g. "3 Methods", used to prefix subsection headings
     in_references = False
+    seen_references = False
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        blocks = page.get_text("blocks")
-        page_idx = page_num + 1
+    def flush(end_page: int) -> None:
+        if content:
+            sections.append(PaperSection(
+                heading=heading, content="\n\n".join(content), page_start=start_page, page_end=end_page,
+            ))
 
-        for b in blocks:
-            # b = (x0, y0, x1, y1, text, block_no, block_type)
-            block_text = b[4].strip()
-            if not block_text:
-                continue
+    def add_line(text: str, block_id: tuple[int, int]) -> None:
+        nonlocal content_block
+        if content and block_id == content_block:
+            prev = content[-1]
+            # Re-join words hyphenated across line breaks ("merg-" + "ing").
+            content[-1] = prev[:-1] + text if prev.endswith("-") and text[:1].islower() else f"{prev} {text}"
+        else:
+            content.append(text)
+        content_block = block_id
 
-            full_text_parts.append(block_text)
-            first_line = block_text.split("\n")[0].strip()
-
-            # Check if this block is a section heading
-            if len(first_line) < 60 and SECTION_HEADER_REGEX.match(first_line):
-                # Save previous section
-                if current_content:
-                    sections.append(
-                        PaperSection(
-                            heading=current_heading,
-                            content="\n".join(current_content),
-                            page_start=current_start_page,
-                            page_end=page_idx,
-                        )
-                    )
-                    current_content = []
-
-                current_heading = first_line
-                current_start_page = page_idx
-                
-                if "reference" in first_line.lower() or "bibliography" in first_line.lower():
-                    in_references = True
-                else:
-                    in_references = False
-
-                # Remaining lines in the block go to section content
-                remaining_lines = block_text.split("\n")[1:]
-                if remaining_lines:
-                    current_content.append("\n".join(remaining_lines))
+    i = 0
+    while i < len(lines):
+        page, block, text, _, _ = lines[i]
+        found = detect_heading(lines, i, body_size, allow_letter_labels=seen_references)
+        if found:
+            label, number, consumed = found
+            flush(page)
+            content, content_block = [], None
+            if number and "." in number:
+                heading = f"{top_level} › {number} {label}" if top_level else f"{number} {label}"
             else:
-                if in_references:
-                    references.append(block_text)
-                else:
-                    current_content.append(block_text)
+                top_level = f"{number} {label}" if number else label
+                heading = top_level
+            start_page = page
+            in_references = label.lower() in ("references", "bibliography")
+            seen_references = seen_references or in_references
+            i += consumed
+            continue
 
-    # Append the final section
-    if current_content:
-        sections.append(
-            PaperSection(
-                heading=current_heading,
-                content="\n".join(current_content),
-                page_start=current_start_page,
-                page_end=len(doc),
-            )
-        )
+        if in_references:
+            # A new entry starts at a "[n]" marker; for author-year styles, at a new PDF block.
+            numbered = REFERENCE_START_REGEX.match(text) is not None
+            new_block = ref_block_id not in (None, (page, block)) and not REFERENCE_START_REGEX.match(ref_block[0] if ref_block else "")
+            if ref_block and (numbered or new_block):
+                references.append(" ".join(ref_block))
+                ref_block = []
+            ref_block.append(text)
+            ref_block_id = (page, block)
+        else:
+            add_line(text, (page, block))
+        i += 1
 
-    doc.close()
-    return sections, references, "\n\n".join(full_text_parts)
+    flush(page_count)
+    if ref_block:
+        references.append(" ".join(ref_block))
+
+    full_text = "\n".join(text for _, _, text, _, _ in lines)
+    return sections, references, full_text
 
 
 def extract_with_pypdf(pdf_path: Path) -> tuple[list[PaperSection], list[str], str]:

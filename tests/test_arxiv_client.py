@@ -39,3 +39,35 @@ def test_parse_atom_entry():
     assert paper.published_date == "2024-01-23"
     assert paper.primary_category == "cs.CL"
     assert "cs.AI" in paper.categories
+
+
+def test_search_terms_drop_conversational_filler():
+    from arxiv_digest.nodes.arxiv_client import search_terms
+
+    assert search_terms("recent work on KV-cache compression for LLMs") == ["KV-cache", "compression", "LLMs"]
+
+
+def test_zero_results_relax_over_content_terms(tmp_path):
+    from unittest.mock import patch
+
+    from arxiv_digest.config import AgentConfig
+    from arxiv_digest.models import PaperMetadata
+    from arxiv_digest.nodes.arxiv_client import arxiv_retrieval_node
+    from arxiv_digest.state import AgentState
+
+    paper = PaperMetadata(
+        arxiv_id="1", title="t", abstract="a", pdf_url="u", abs_url="u", published_date="2026-01-01"
+    )
+    calls = []
+
+    def fake_fetch(query=None, operator="AND", **kwargs):
+        calls.append((query, operator))
+        return [paper] if operator == "OR" else []
+
+    state = AgentState(raw_query="recent work on quantum KV-cache origami compression", intent="TOPIC_SEARCH")
+    with patch("arxiv_digest.nodes.arxiv_client.fetch_from_arxiv", side_effect=fake_fetch):
+        state = arxiv_retrieval_node(state, AgentConfig(data_dir=tmp_path))
+
+    assert state.candidate_papers == [paper]
+    assert calls[1] == ("quantum KV-cache", "AND")
+    assert calls[2][1] == "OR" and "recent" not in calls[2][0]

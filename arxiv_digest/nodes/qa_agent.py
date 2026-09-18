@@ -12,10 +12,38 @@ import re
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import QACitation, QAResponse, TextChunk
-from arxiv_digest.nodes.vector_store import LocalVectorStore, get_vector_store
+from arxiv_digest.nodes.vector_store import LocalVectorStore, get_vector_store, register_vector_store
 from arxiv_digest.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+# The model is told to open any refusal with this marker, which is more reliable than
+# guessing from free-form wording. REFUSAL_PHRASES remains as a backstop.
+REFUSAL_MARKER = "NOT IN PAPER:"
+REFUSAL_PHRASES = (
+    "does not mention",
+    "not covered in the paper",
+    "cannot answer this question based on the",
+    "not contain sufficient information",
+    "the provided sources do not",
+    "the context does not",
+    "excerpts do not",
+    "does not specify",
+    "does not address",
+)
+
+
+def _strip_marker(answer: str) -> str | None:
+    """Return the text after a leading refusal marker (tolerating Markdown emphasis), else None."""
+    text = answer.strip().lstrip("*_ ")
+    if not text.upper().startswith(REFUSAL_MARKER):
+        return None
+    return text[len(REFUSAL_MARKER):].lstrip("*_ ").strip()
+
+
+def is_refusal(answer: str) -> bool:
+    """True when the model reported that the retrieved sources do not answer the question."""
+    return _strip_marker(answer) is not None or any(p in answer.lower() for p in REFUSAL_PHRASES)
 
 
 def format_context_chunks(chunks_with_scores: list[tuple[TextChunk, float]]) -> tuple[str, list[QACitation]]:
@@ -54,7 +82,9 @@ def answer_question(
     store = get_vector_store(state.session_id)
     if not store:
         if state.chunks:
+            # Resumed session: rebuild the index from persisted chunks once, then reuse it.
             store = LocalVectorStore(chunks=state.chunks)
+            register_vector_store(state.session_id, store)
         else:
             return QAResponse(
                 question=question,
@@ -73,7 +103,7 @@ def answer_question(
 
     # Anti-Hallucination Guard: If no chunks meet minimum similarity threshold
     if not retrieved:
-        return QAResponse(
+        response = QAResponse(
             question=question,
             answer=(
                 "I cannot answer this question based on the paper. The document does not contain "
@@ -84,6 +114,8 @@ def answer_question(
             is_grounded=False,
             confidence_score=0.0,
         )
+        state.record_qa_interaction(response)
+        return response
 
     context_str, citations = format_context_chunks(retrieved)
     paper_title = state.selected_paper.title if state.selected_paper else "the paper"
@@ -92,8 +124,12 @@ def answer_question(
         "You are an objective research assistant answering questions about a scientific paper. "
         "You MUST answer strictly and exclusively based on the provided Context Sources. "
         "Every single factual assertion must cite its source (e.g., '[Source 1]' or '[Section 3, p. 4]'). "
-        "If the Context does not contain the answer, explicitly refuse and state that the paper does not mention it. "
-        "Never extrapolate or hallucinate outside the retrieved text."
+        f"If the Context does not contain the answer, begin your reply with '{REFUSAL_MARKER}' and explain in one "
+        "sentence what is missing. "
+        "Never extrapolate or hallucinate outside the retrieved text. "
+        "The context is extracted from a PDF, so tables appear as flattened runs of numbers. Quote a table value "
+        "only when the text makes its row (method, model) and column unambiguous, and name that row and model; "
+        "otherwise say the table could not be read reliably. Prefer numbers stated in prose."
     )
 
     user_prompt = f"""PAPER: {paper_title}
@@ -113,17 +149,21 @@ Provide a precise, grounded answer citing specific sources. If the answer is abs
             json_mode=False,
         )
     except Exception as e:
-        logger.warning(f"LLM generation failed ({e}). Returning fallback response.")
-        answer_text = f"An error occurred while synthesizing the answer: {e}"
+        logger.warning(f"LLM generation failed ({e}).")
+        response = QAResponse(
+            question=question,
+            answer=f"The language model could not be reached, so no answer was generated ({e}).",
+            citations=[],
+            is_grounded=False,
+            confidence_score=0.0,
+        )
+        state.record_qa_interaction(response)
+        return response
 
-    # Determine if response refused or indicated absence
-    refusal_keywords = [
-        "does not mention",
-        "not covered in the paper",
-        "cannot answer this question based on the paper",
-        "not contain sufficient information",
-    ]
-    is_grounded = not any(kw in answer_text.lower() for kw in refusal_keywords)
+    is_grounded = not is_refusal(answer_text)
+    explanation = _strip_marker(answer_text)
+    if explanation is not None:
+        answer_text = f"The retrieved passages do not answer this. {explanation}"
 
     response = QAResponse(
         question=question,

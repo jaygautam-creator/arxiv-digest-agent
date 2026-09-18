@@ -10,6 +10,23 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE lines from a .env file without overriding the real environment."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.split(" #", 1)[0].strip().strip("'\"")
+        os.environ.setdefault(key.strip(), value)
+
+
+def _is_placeholder(value: str | None) -> bool:
+    return not value or value.startswith("your_")
+
+
 class LLMProviderType(str, Enum):
     """Supported LLM providers."""
     GEMINI = "gemini"
@@ -24,10 +41,11 @@ class AgentConfig(BaseModel):
     # Provider & Model selection
     provider: LLMProviderType = Field(default=LLMProviderType.MOCK)
     gemini_api_key: str | None = Field(default=None)
-    gemini_model: str = Field(default="gemini-1.5-flash")
-    
+    gemini_model: str = Field(default="gemini-3.8-flash")
+    gemini_fallback_models: list[str] = Field(default_factory=lambda: ["gemini-2.5-flash"])
+
     groq_api_key: str | None = Field(default=None)
-    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_model: str = Field(default="openai/gpt-oss-120b")
     
     ollama_base_url: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3")
@@ -47,21 +65,31 @@ class AgentConfig(BaseModel):
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
-        """Load configuration from environment variables with graceful fallback."""
-        # Auto-detect available providers
+        """Load configuration from `.env` and environment variables.
+
+        `LLM_PROVIDER` selects the provider explicitly; when unset (or "auto"), the first
+        provider with a real API key wins, and mock is used only if none is configured.
+        Groq is preferred over Gemini because its free tier allows far more requests per day.
+        """
+        load_dotenv()
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         groq_key = os.getenv("GROQ_API_KEY")
-        force_mock = os.getenv("MOCK_LLM", "").lower() in ("1", "true", "yes")
+        gemini_key = None if _is_placeholder(gemini_key) else gemini_key
+        groq_key = None if _is_placeholder(groq_key) else groq_key
 
-        provider = LLMProviderType.MOCK
-        if force_mock:
+        requested = os.getenv("LLM_PROVIDER", "auto").strip().lower()
+        if os.getenv("MOCK_LLM", "").lower() in ("1", "true", "yes"):
             provider = LLMProviderType.MOCK
-        elif gemini_key:
-            provider = LLMProviderType.GEMINI
+        elif requested in {p.value for p in LLMProviderType}:
+            provider = LLMProviderType(requested)
         elif groq_key:
             provider = LLMProviderType.GROQ
+        elif gemini_key:
+            provider = LLMProviderType.GEMINI
         elif os.getenv("USE_OLLAMA", "").lower() in ("1", "true"):
             provider = LLMProviderType.OLLAMA
+        else:
+            provider = LLMProviderType.MOCK
 
         data_dir = Path(os.getenv("AGENT_DATA_DIR", "./data"))
         cache_dir = data_dir / "cache"
@@ -75,9 +103,12 @@ class AgentConfig(BaseModel):
         return cls(
             provider=provider,
             gemini_api_key=gemini_key,
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+            gemini_fallback_models=[
+                m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",") if m.strip()
+            ],
             groq_api_key=groq_key,
-            groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3"),
             data_dir=data_dir,

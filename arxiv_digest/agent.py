@@ -35,13 +35,18 @@ class ArxivDigestAgent:
         return self.graph.execute(query=query, on_progress=on_progress)
 
     def ask(self, state: AgentState, question: str) -> QAResponse:
-        """Query the paper using grounded retrieval-augmented generation."""
-        return answer_question(
+        """Query the paper using grounded retrieval-augmented generation.
+
+        The session file is re-saved after every turn so QA history survives a restart.
+        """
+        response = answer_question(
             question=question,
             state=state,
             llm=self.llm,
             config=self.config,
         )
+        state.save_session(self.config.sessions_dir)
+        return response
 
     def load_session(self, session_path: str | Path) -> AgentState:
         """Restore a previously analyzed paper session from disk."""

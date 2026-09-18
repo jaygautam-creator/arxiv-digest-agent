@@ -15,6 +15,7 @@ from rich.text import Text
 
 from arxiv_digest.agent import ArxivDigestAgent
 from arxiv_digest.config import AgentConfig, LLMProviderType
+from arxiv_digest.llm import ProviderConfigError, describe_provider
 from arxiv_digest.state import AgentState
 
 console = Console()
@@ -140,7 +141,18 @@ def main() -> None:
     elif args.provider:
         config.provider = LLMProviderType(args.provider)
 
-    agent = ArxivDigestAgent(config=config)
+    try:
+        agent = ArxivDigestAgent(config=config)
+    except ProviderConfigError as e:
+        console.print(f"[bold red]Configuration error:[/bold red] {e}")
+        sys.exit(2)
+
+    console.print(f"[bold]LLM Provider:[/bold] [cyan]{describe_provider(config)}[/cyan]")
+    if config.provider == LLMProviderType.MOCK:
+        console.print(
+            "[bold yellow]Mock mode: no LLM is called. Briefing and answers are placeholders; "
+            "set GEMINI_API_KEY or GROQ_API_KEY in .env for real output.[/bold yellow]"
+        )
 
     # Resume session or execute graph
     if args.session:
@@ -156,7 +168,6 @@ def main() -> None:
             parser.print_help()
             sys.exit(1)
 
-        console.print(f"[bold]Active Provider:[/bold] [cyan]{config.provider.value}[/cyan]")
         console.print(f"[bold]Target Query:[/bold] [yellow]{args.query}[/yellow]\n")
 
         with console.status("[bold cyan]Executing state graph pipeline...[/bold cyan]") as status:
@@ -164,6 +175,12 @@ def main() -> None:
                 status.update(f"[cyan][{node_name}][/cyan] {msg}")
 
             state = agent.analyze(args.query, on_progress=on_progress)
+
+    for warning in state.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    model_used = getattr(agent.llm, "last_model_used", None)
+    if model_used and config.provider == LLMProviderType.GEMINI and model_used != config.gemini_model:
+        console.print(f"[yellow]Note:[/yellow] {config.gemini_model} was unavailable; answered by {model_used}.")
 
     # Check for fatal errors
     if state.errors:

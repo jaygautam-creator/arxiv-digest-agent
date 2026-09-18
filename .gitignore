@@ -52,13 +52,7 @@ data/sessions/
 *.sqlite3
 *.zip
 
-# Developer / tool session logs (keep repository pristine)
-.agent/
-.gemini/
-.claude/
+# Logs and scratch files
 *.log
 scratch/
 session_logs/
-
-CLAUDE.md
-AI Internship Assessment.pdf

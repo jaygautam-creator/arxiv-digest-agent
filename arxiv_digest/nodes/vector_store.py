@@ -21,6 +21,20 @@ from arxiv_digest.models import TextChunk
 from arxiv_digest.state import AgentState
 
 
+# Function words and question scaffolding. Without this, a question such as
+# "What is the capital of France?" matches any chunk on "what/is/the" and slips
+# past the similarity gate.
+STOPWORDS = frozenset(
+    """a about above after again all also am an and any are as at be been being before below
+    between both but by can could did do does doing down during each few for from further had
+    has have having he her here hers him his how i if in into is it its itself just me more most
+    my no nor not now of off on once only or other our ours out over own same she should so some
+    such than that the their theirs them then there these they this those through to too under
+    until up very was we were what when where which while who whom why will with would you your
+    yours tell describe explain paper authors author""".split()
+)
+
+
 class LocalVectorStore:
     """Local, lightweight vector store with TF-IDF cosine similarity search."""
 
@@ -33,8 +47,17 @@ class LocalVectorStore:
             self._build_index()
 
     def _tokenize(self, text: str) -> list[str]:
-        """Tokenize text into lowercase alphanumeric tokens."""
-        return re.findall(r"\b[a-zA-Z0-9_\-\.]{2,}\b", text.lower())
+        """Tokenize into lowercase terms, dropping stopwords.
+
+        Hyphenated compounds are kept whole and also split into their parts, so
+        "LLaMA-3-8B" in a question still matches "LLaMA-3-Instruct-8B" in the paper.
+        """
+        tokens = []
+        for token in re.findall(r"\b[a-zA-Z0-9_\-\.]{2,}\b", text.lower()):
+            tokens.append(token)
+            if "-" in token:
+                tokens.extend(part for part in token.split("-") if len(part) >= 2)
+        return [t for t in tokens if t not in STOPWORDS]
 
     def _build_index(self) -> None:
         """Build term-document matrix with sublinear TF and smoothed IDF."""

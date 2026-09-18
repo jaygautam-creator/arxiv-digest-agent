@@ -28,6 +28,7 @@ def create_chunks_for_section(
     page_end: int,
     chunk_size: int = 800,
     chunk_overlap: int = 150,
+    section_index: int = 0,
 ) -> list[TextChunk]:
     """Generate overlapping semantic chunks bounded strictly within section scope."""
     chunks: list[TextChunk] = []
@@ -56,7 +57,7 @@ def create_chunks_for_section(
                     chunk_counter += 1
                     chunks.append(
                         TextChunk(
-                            chunk_id=f"{heading[:15]}_{chunk_counter}",
+                            chunk_id=f"s{section_index}_c{chunk_counter}",
                             section_heading=heading,
                             page_number=approx_page,
                             text=current_chunk_text,
@@ -82,7 +83,7 @@ def create_chunks_for_section(
         chunk_counter += 1
         chunks.append(
             TextChunk(
-                chunk_id=f"{heading[:15]}_{chunk_counter}",
+                chunk_id=f"s{section_index}_c{chunk_counter}",
                 section_heading=heading,
                 page_number=page_end,
                 text=current_chunk_text,
@@ -106,7 +107,7 @@ def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
     parsed = state.parsed_paper
     all_chunks: list[TextChunk] = []
 
-    for section in parsed.sections:
+    for section_index, section in enumerate(parsed.sections):
         # Don't create chunks for references to avoid polluting technical retrieval
         if "reference" in section.heading.lower() or "bibliography" in section.heading.lower():
             continue
@@ -118,6 +119,7 @@ def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
             page_end=section.page_end,
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
+            section_index=section_index,
         )
         all_chunks.extend(section_chunks)
 

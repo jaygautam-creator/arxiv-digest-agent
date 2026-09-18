@@ -1,7 +1,8 @@
 """Node 3: Candidate Paper Selection & Ranking.
 
-Ranks multiple candidate papers from topic search using lexical relevance,
-recency weighting, and LLM semantic judgment.
+Chooses one paper from the topic-search candidates. The LLM judges relevance from titles,
+dates and abstracts (told to prefer newer work when the query asks for recent papers);
+if that call fails, a keyword-overlap score with the same recency preference decides.
 
 Author: Jay Gautam (jaygautam561@gmail.com)
 Project: 8byte Assessment
@@ -10,13 +11,33 @@ Project: 8byte Assessment
 import json
 import re
 import time
+from datetime import date
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import PaperMetadata
 from arxiv_digest.state import AgentState
 
 
+RECENCY_CUES = re.compile(r"\b(recent|latest|new|newest|current|state[- ]of[- ]the[- ]art|sota|20\d\d)\b", re.IGNORECASE)
+
+
+def wants_recent(query: str) -> bool:
+    """True when the user's wording asks for recent work."""
+    return bool(RECENCY_CUES.search(query))
+
+
+def recency_score(paper: PaperMetadata, today: date | None = None) -> float:
+    """1.0 for a paper published today, decaying linearly to 0 over three years."""
+    today = today or date.today()
+    try:
+        published = date.fromisoformat(paper.published_date[:10])
+    except ValueError:
+        return 0.0
+    age_days = max(0, (today - published).days)
+    return max(0.0, 1.0 - age_days / (3 * 365))
+
+
 def compute_heuristic_score(paper: PaperMetadata, query: str) -> float:
-    """Compute lexical match score between query terms and paper metadata."""
+    """Lexical match between query and paper metadata, plus recency when the query asks for it."""
     query_terms = set(re.findall(r"\w+", query.lower()))
     if not query_terms:
         return 0.0
@@ -28,7 +49,10 @@ def compute_heuristic_score(paper: PaperMetadata, query: str) -> float:
     abstract_overlap = len(query_terms.intersection(abstract_words)) / len(query_terms)
 
     # 60% title weight, 40% abstract weight
-    return (title_overlap * 0.6) + (abstract_overlap * 0.4)
+    score = (title_overlap * 0.6) + (abstract_overlap * 0.4)
+    if wants_recent(query):
+        score += 0.3 * recency_score(paper)
+    return score
 
 
 def select_paper_with_llm(
@@ -46,6 +70,12 @@ def select_paper_with_llm(
             f"Abstract: {paper.abstract[:400]}...\n\n"
         )
 
+    recency_instruction = (
+        f"Today is {date.today().isoformat()}. The user asked for recent work, so when candidates are "
+        "comparably relevant, prefer the more recently published one."
+        if wants_recent(query)
+        else ""
+    )
     prompt = f"""You are an expert AI research scientist helping rank arXiv papers for a literature review.
 The user is researching: "{query}"
 
@@ -53,6 +83,7 @@ Review the following candidate papers:
 {options_text}
 
 Select the single candidate that is most directly relevant and impactful for this topic.
+{recency_instruction}
 Respond in JSON format:
 {{
   "selected_index": <int 0 to {len(candidates) - 1}>,

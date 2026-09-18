@@ -48,3 +48,18 @@ def test_vector_store_search_and_persistence(tmp_path: Path):
 
     loaded_results = loaded_store.search("KV-cache memory", top_k=1)
     assert loaded_results[0][0].chunk_id == "chunk_1"
+
+
+def test_stopword_only_overlap_does_not_pass_gate():
+    """A question sharing only function words with the paper must retrieve nothing."""
+    chunks = [
+        TextChunk(
+            chunk_id="c1",
+            text="What is the effect of ridge regression on the retained KV cache tokens?",
+            section_heading="Method",
+            page_number=3,
+        )
+    ]
+    store = LocalVectorStore(chunks=chunks)
+    assert store.search("What is the capital of France?", min_threshold=0.01) == []
+    assert store.search("ridge regression", min_threshold=0.01)

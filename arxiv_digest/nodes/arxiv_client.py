@@ -21,6 +21,19 @@ from arxiv_digest.state import AgentState
 logger = logging.getLogger(__name__)
 
 ARXIV_API_BASE = "https://export.arxiv.org/api/query"
+
+# Conversational words that would otherwise become mandatory AND terms in the arXiv query.
+QUERY_STOPWORDS = {
+    "recent", "latest", "new", "work", "works", "on", "for", "the", "a", "an", "in", "of", "and",
+    "to", "with", "paper", "papers", "study", "studies", "using", "about", "research", "survey",
+}
+
+
+def search_terms(query: str) -> list[str]:
+    """Content terms of a topic query, in order, with conversational filler removed."""
+    tokens = re.findall(r"[a-zA-Z0-9_\-]+", query)
+    terms = [t for t in tokens if len(t) > 2 and t.lower() not in QUERY_STOPWORDS]
+    return terms or [t for t in tokens if len(t) > 1]
 ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -115,6 +128,7 @@ def fetch_from_arxiv(
     max_results: int = 5,
     sort_by: str = "relevance",
     timeout: float = 30.0,
+    operator: str = "AND",
 ) -> list[PaperMetadata]:
     """Execute request to the official arXiv API Atom feed."""
     params: dict[str, str | int] = {}
@@ -125,16 +139,9 @@ def fetch_from_arxiv(
         params["start"] = 0
         params["max_results"] = max_results
         
-        # Stopwords that pollute arXiv Atom boolean queries
-        stopwords = {"recent", "work", "on", "for", "the", "a", "an", "in", "of", "and", "to", "with", "paper", "papers", "study", "new", "using"}
-        tokens = [t for t in re.findall(r"[a-zA-Z0-9_\-]+", query) if len(t) > 2 and t.lower() not in stopwords]
-        
-        if not tokens:
-            # Fallback to any token
-            tokens = [t for t in re.findall(r"[a-zA-Z0-9_\-]+", query) if len(t) > 1]
-
+        tokens = search_terms(query)
         if len(tokens) > 1:
-            params["search_query"] = " AND ".join(f"all:{t}" for t in tokens[:5])
+            params["search_query"] = f" {operator} ".join(f"all:{t}" for t in tokens[:5])
         elif tokens:
             params["search_query"] = f"all:{tokens[0]}"
         else:
@@ -204,14 +211,25 @@ def arxiv_retrieval_node(state: AgentState, config: AgentConfig) -> AgentState:
                 max_results=config.arxiv_max_results,
                 timeout=config.request_timeout,
             )
-            # Failure case handling: What happens if arXiv returns 0 candidate papers for a vague topic?
-            if not papers:
-                state.add_warning("Strict keyword search yielded 0 results. Relaxing query to broader terms...")
-                # Broader relaxed search using single primary keywords
-                words = [w for w in state.raw_query.split() if len(w) > 3]
-                if words:
-                    relaxed_query = words[0]
-                    papers = fetch_from_arxiv(query=relaxed_query, max_results=config.arxiv_max_results, timeout=config.request_timeout)
+            # Zero results for an over-specific topic: relax step by step instead of failing.
+            # First keep only the two leading content terms, then accept papers matching any term
+            # (the ranking node then picks the most relevant of these broader candidates).
+            terms = search_terms(state.raw_query)
+            relaxations = []
+            if len(terms) > 2:
+                relaxations.append((" ".join(terms[:2]), "AND"))
+            if len(terms) > 1:
+                relaxations.append((" ".join(terms), "OR"))
+            for relaxed_query, operator in relaxations:
+                if papers:
+                    break
+                state.add_warning(f"No results for the full query; retrying with {operator} over: '{relaxed_query}'.")
+                papers = fetch_from_arxiv(
+                    query=relaxed_query,
+                    max_results=config.arxiv_max_results,
+                    timeout=config.request_timeout,
+                    operator=operator,
+                )
 
             if papers:
                 state.candidate_papers = papers

@@ -11,6 +11,8 @@ from arxiv_digest.llm.base import BaseLLM
 class OllamaLLM(BaseLLM):
     """Client for locally hosted Ollama instances."""
 
+    name = "ollama"
+
     def __init__(self, base_url: str = "http://localhost:11434", model_name: str = "llama3"):
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
@@ -32,7 +34,7 @@ class OllamaLLM(BaseLLM):
         if json_mode:
             payload["format"] = "json"
 
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=300.0) as client:
             resp = client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()

@@ -6,7 +6,7 @@ Project: 8byte Assessment
 
 from datetime import datetime, timezone
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PaperMetadata(BaseModel):
@@ -77,6 +77,17 @@ class ExecutiveBriefing(BaseModel):
     suggested_followup_questions: list[str] = Field(
         description="Targeted questions a researcher or practitioner might ask to test or extend the work"
     )
+
+    @field_validator("method_approach", "key_results_claims", "limitations", "suggested_followup_questions")
+    @classmethod
+    def _drop_blank_items(cls, items: list[str]) -> list[str]:
+        return [item.strip() for item in items if item and item.strip()]
+
+    @field_validator("limitations")
+    @classmethod
+    def _limitations_never_silently_empty(cls, items: list[str]) -> list[str]:
+        # The rubric requires explicit limitations; say so rather than render an empty section.
+        return items or ["The model reported no limitations; check the paper's own Limitations or Discussion section."]
 
     def to_markdown(self) -> str:
         """Render the briefing as formatted Markdown."""
