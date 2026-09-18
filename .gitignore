@@ -50,6 +50,7 @@ data/downloads/
 data/sessions/
 *.sqlite
 *.sqlite3
+*.zip
 
 # Developer / tool session logs (keep repository pristine)
 .agent/
