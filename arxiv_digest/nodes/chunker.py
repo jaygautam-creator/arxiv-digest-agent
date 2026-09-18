@@ -29,68 +29,67 @@ def create_chunks_for_section(
     chunk_size: int = 800,
     chunk_overlap: int = 150,
     section_index: int = 0,
+    paragraph_pages: list[int] | None = None,
 ) -> list[TextChunk]:
-    """Generate overlapping semantic chunks bounded strictly within section scope."""
-    chunks: list[TextChunk] = []
+    """Pack sentences into overlapping chunks that never cross the section boundary.
+
+    Each chunk is labelled with the page its first sentence comes from. Exact pages come
+    from `paragraph_pages` (one per paragraph, recorded by the PDF parser); without them,
+    the page is interpolated across the section's page range.
+    """
     if not content.strip():
-        return chunks
+        return []
 
-    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-    current_chunk_text = ""
-    current_sentences: list[str] = []
-    chunk_counter = 0
+    raw_paragraphs = content.split("\n\n")
+    if paragraph_pages is None or len(paragraph_pages) != len(raw_paragraphs):
+        span = max(1, len(raw_paragraphs))
+        paragraph_pages = [page_start + (i * (page_end - page_start)) // span for i in range(len(raw_paragraphs))]
 
-    # Approximate page number interpolation
-    num_paras = max(1, len(paragraphs))
+    # Units are sentences, or whole rows for reconstructed tables ("label | v1 | v2"),
+    # which must stay on their own lines so values remain attached to their row.
+    units: list[tuple[str, int, bool]] = []
+    for paragraph, page in zip(raw_paragraphs, paragraph_pages):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if " | " in paragraph:
+            units.extend((row.strip(), page, " | " in row) for row in paragraph.splitlines() if row.strip())
+        else:
+            units.extend((sentence, page, False) for sentence in split_into_sentences(paragraph))
 
-    for p_idx, para in enumerate(paragraphs):
-        approx_page = page_start + int((p_idx / num_paras) * (page_end - page_start))
-        sentences = split_into_sentences(para)
+    chunks: list[TextChunk] = []
+    current: list[tuple[str, int, bool]] = []
 
-        for sent in sentences:
-            test_chunk = (current_chunk_text + " " + sent).strip()
-            if len(test_chunk) <= chunk_size:
-                current_chunk_text = test_chunk
-                current_sentences.append(sent)
-            else:
-                if current_chunk_text:
-                    chunk_counter += 1
-                    chunks.append(
-                        TextChunk(
-                            chunk_id=f"s{section_index}_c{chunk_counter}",
-                            section_heading=heading,
-                            page_number=approx_page,
-                            text=current_chunk_text,
-                            token_count=len(current_chunk_text.split()),
-                        )
-                    )
-
-                # Keep overlap sentences from the tail
-                overlap_text = ""
-                retained_sentences: list[str] = []
-                for s in reversed(current_sentences):
-                    if len(overlap_text) + len(s) < chunk_overlap:
-                        overlap_text = s + " " + overlap_text
-                        retained_sentences.insert(0, s)
-                    else:
-                        break
-
-                current_sentences = retained_sentences + [sent]
-                current_chunk_text = " ".join(current_sentences)
-
-    # Emit final chunk
-    if current_chunk_text.strip():
-        chunk_counter += 1
+    def emit() -> None:
+        text = current[0][0]
+        for unit, _, is_row in current[1:]:
+            text += ("\n" if is_row else " ") + unit
         chunks.append(
             TextChunk(
-                chunk_id=f"s{section_index}_c{chunk_counter}",
+                chunk_id=f"s{section_index}_c{len(chunks) + 1}",
                 section_heading=heading,
-                page_number=page_end,
-                text=current_chunk_text,
-                token_count=len(current_chunk_text.split()),
+                page_number=current[0][1],
+                page_end=current[-1][1],
+                text=text,
+                token_count=len(text.split()),
             )
         )
 
+    for unit in units:
+        candidate_length = sum(len(u) + 1 for u, _, _ in current) + len(unit[0])
+        if current and candidate_length > chunk_size:
+            emit()
+            # Carry trailing units (up to chunk_overlap characters) into the next chunk.
+            overlap: list[tuple[str, int, bool]] = []
+            for item in reversed(current):
+                if sum(len(u) + 1 for u, _, _ in overlap) + len(item[0]) >= chunk_overlap:
+                    break
+                overlap.insert(0, item)
+            current = overlap
+        current.append(unit)
+
+    if current:
+        emit()
     return chunks
 
 
@@ -120,6 +119,7 @@ def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             section_index=section_index,
+            paragraph_pages=section.paragraph_pages,
         )
         all_chunks.extend(section_chunks)
 

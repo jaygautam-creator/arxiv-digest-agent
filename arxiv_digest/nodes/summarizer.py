@@ -23,6 +23,8 @@ APPENDIX_HEADING = re.compile(r"^[A-H](?:\.\d+)*\s")
 
 def is_table_like(paragraph: str, threshold: float = 0.4) -> bool:
     """True for flattened table text: a paragraph where numeric tokens dominate."""
+    if "\n" in paragraph and " | " in paragraph:
+        return True  # a reconstructed table (one "label | v1 | v2" row per line)
     tokens = paragraph.split()
     if len(tokens) < 8:
         return False

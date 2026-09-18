@@ -13,6 +13,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import NamedTuple
 import urllib.request
 import httpx
 
@@ -88,20 +89,121 @@ def _is_bold(span: dict) -> bool:
     return bool(span.get("flags", 0) & 16) or any(tag in font for tag in ("Bold", "Medi", "Semibold", ".B"))
 
 
-def _read_lines(doc) -> tuple[list[tuple[int, int, str, bool, float]], float]:
-    """Flatten the document into (page, block, text, is_bold, size) lines plus the body font size."""
-    lines = []
+class Line(NamedTuple):
+    page: int
+    block: int
+    text: str
+    bold: bool
+    size: float
+    is_table_row: bool = False  # a reconstructed table row: cells joined by " | "
+
+
+ROW_Y_TOLERANCE = 3.0  # points; cells of one table row sit on (almost) the same baseline
+HEADER_SEARCH_HEIGHT = 150.0  # points above a table block searched for column headers
+NUMERIC_CELL = re.compile(r"^[\d.,%×x±+\-–/()GMKB]+$")
+
+
+class Geometry(NamedTuple):
+    block: int
+    y0: float
+    y1: float
+    x0: float
+    x1: float
+    text: str
+
+
+def _table_rows(geometry: list[Geometry]) -> list[list[tuple[float, str]]] | None:
+    """Rebuild rows of (x_center, cell) from one block's lines, or None if it is not a table.
+
+    In LaTeX PDFs each table cell is usually its own line, so a table block has several
+    lines side by side on the same baseline; prose has one line per baseline.
+    """
+    rows: list[list[Geometry]] = []
+    for g in sorted(geometry, key=lambda g: (g.y0, g.x0)):
+        if rows and abs(g.y0 - rows[-1][0].y0) <= ROW_Y_TOLERANCE:
+            rows[-1].append(g)
+        else:
+            rows.append([g])
+    if max(len(r) for r in rows) < 3:
+        return None
+
+    table = []
+    for row in rows:
+        cells: list[tuple[float, str]] = []
+        for g in sorted(row, key=lambda g: g.x0):
+            tokens = g.text.split()
+            if len(tokens) > 1 and all(NUMERIC_CELL.match(t) for t in tokens):
+                # PDF generators sometimes merge adjacent numeric cells into one line;
+                # split it and spread the cells evenly across the line's width.
+                step = (g.x1 - g.x0) / len(tokens)
+                cells.extend((g.x0 + step * (k + 0.5), t) for k, t in enumerate(tokens))
+            else:
+                cells.append(((g.x0 + g.x1) / 2, g.text))
+        table.append(cells)
+    return table
+
+
+def _column_header(x_center: float, table_top: float, candidates: list[Geometry]) -> str | None:
+    """The lowest short text above the table whose horizontal extent covers this column."""
+    covering = [
+        g for g in candidates
+        if g.x0 - 3 <= x_center <= g.x1 + 3 and table_top - HEADER_SEARCH_HEIGHT <= g.y0 < table_top
+    ]
+    return max(covering, key=lambda g: g.y0).text if covering else None
+
+
+def _render_table(rows: list[list[tuple[float, str]]], table_top: float, page_geometry: list[Geometry], block: int) -> list[str]:
+    """Render rows as "label | header: value | ...", attaching column headers found above the table."""
+    # A column header sits over one column; text spanning three or more columns is a group
+    # label (e.g. "Llama-3.1-8B-Instruct, 10% Cache Budget"), not a header.
+    column_centers = [x for x, _ in max(rows, key=len)[1:]]
+    candidates = [
+        g for g in page_geometry
+        if g.block != block and len(g.text) <= 40 and any(ch.isalpha() for ch in g.text)
+        and not NUMERIC_CELL.match(g.text.replace(" ", ""))
+        and sum(g.x0 - 3 <= x <= g.x1 + 3 for x in column_centers) < 3
+    ]
+    rendered = []
+    for cells in rows:
+        is_data_row = any(NUMERIC_CELL.match(text) for _, text in cells[1:])
+        parts = [cells[0][1]]
+        for x, text in cells[1:]:
+            header = _column_header(x, table_top, candidates) if is_data_row else None
+            parts.append(f"{header}: {text}" if header else text)
+        rendered.append(" | ".join(parts))
+    return rendered
+
+
+def _read_lines(doc) -> tuple[list[Line], float]:
+    """Flatten the document into lines plus the body font size; table blocks become one line per row."""
+    lines: list[Line] = []
     size_weight: dict[float, int] = {}
     for page_idx, page in enumerate(doc, start=1):
+        page_blocks: list[tuple[int, list[Line], list[Geometry]]] = []
         for block_idx, block in enumerate(page.get_text("dict")["blocks"]):
+            block_lines: list[Line] = []
+            geometry: list[Geometry] = []
             for line in block.get("lines", []):
                 spans = [sp for sp in line["spans"] if sp["text"].strip()]
                 if not spans:
                     continue
                 text = " ".join(sp["text"].strip() for sp in spans)
                 size = round(max(sp["size"] for sp in spans), 1)
-                lines.append((page_idx, block_idx, text, all(_is_bold(sp) for sp in spans), size))
+                block_lines.append(Line(page_idx, block_idx, text, all(_is_bold(sp) for sp in spans), size))
+                x0, y0, x1, y1 = line["bbox"]
+                geometry.append(Geometry(block_idx, y0, y1, x0, x1, text))
                 size_weight[size] = size_weight.get(size, 0) + len(text)
+            page_blocks.append((block_idx, block_lines, geometry))
+
+        page_geometry = [g for _, _, geometry in page_blocks for g in geometry]
+        for block_idx, block_lines, geometry in page_blocks:
+            rows = _table_rows(geometry) if len(geometry) >= 3 else None
+            if rows is None:
+                lines.extend(block_lines)
+                continue
+            table_top = min(g.y0 for g in geometry)
+            for text in _render_table(rows, table_top, page_geometry, block_idx):
+                lines.append(Line(page_idx, block_idx, text, False, block_lines[0].size, True))
     body_size = max(size_weight, key=size_weight.get) if size_weight else 10.0
     return lines, body_size
 
@@ -116,7 +218,7 @@ def detect_heading(
     Requiring bold + body size filters out bold figure labels and table cells. Letter
     labels ("A", "B.1") are only accepted once the appendix can have started.
     """
-    _, _, text, bold, size = lines[i]
+    text, bold, size = lines[i].text, lines[i].bold, lines[i].size
     if not bold or size < body_size - 0.6 or len(text) > 90:
         return None
 
@@ -129,17 +231,17 @@ def detect_heading(
         while (
             title.lower().endswith(CONTINUATION_ENDINGS)
             and j + extra < len(lines)
-            and lines[j + extra][3]
-            and abs(lines[j + extra][4] - size) < 0.6
-            and len(lines[j + extra][2]) <= 80
+            and lines[j + extra].bold
+            and abs(lines[j + extra].size - size) < 0.6
+            and len(lines[j + extra].text) <= 80
         ):
-            nxt = lines[j + extra][2]
+            nxt = lines[j + extra].text
             title = title[:-1] + nxt if title.endswith("-") else f"{title} {nxt}"
             extra += 1
         return title, extra
 
     if is_number(text.rstrip(".")) and i + 1 < len(lines):
-        _, _, nxt, nxt_bold, nxt_size = lines[i + 1]
+        nxt, nxt_bold, nxt_size = lines[i + 1].text, lines[i + 1].bold, lines[i + 1].size
         if nxt_bold and nxt_size >= body_size - 0.6 and nxt[:1].isupper() and len(nxt) <= 80:
             title, extra = with_continuation(nxt, i + 2)
             return title, text.rstrip("."), 2 + extra
@@ -170,6 +272,7 @@ def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str],
 
     heading, start_page = "Front Matter", 1
     content: list[str] = []  # one paragraph per PDF block
+    content_pages: list[int] = []  # page of each paragraph, for exact citations
     content_block: tuple[int, int] | None = None
     top_level = ""  # e.g. "3 Methods", used to prefix subsection headings
     in_references = False
@@ -179,26 +282,32 @@ def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str],
         if content:
             sections.append(PaperSection(
                 heading=heading, content="\n\n".join(content), page_start=start_page, page_end=end_page,
+                paragraph_pages=list(content_pages),
             ))
 
-    def add_line(text: str, block_id: tuple[int, int]) -> None:
+    def add_line(text: str, block_id: tuple[int, int], is_table_row: bool) -> None:
         nonlocal content_block
         if content and block_id == content_block:
             prev = content[-1]
-            # Re-join words hyphenated across line breaks ("merg-" + "ing").
-            content[-1] = prev[:-1] + text if prev.endswith("-") and text[:1].islower() else f"{prev} {text}"
+            if is_table_row:
+                content[-1] = f"{prev}\n{text}"  # keep one table row per line
+            elif prev.endswith("-") and text[:1].islower():
+                content[-1] = prev[:-1] + text  # re-join words hyphenated across line breaks
+            else:
+                content[-1] = f"{prev} {text}"
         else:
             content.append(text)
+            content_pages.append(block_id[0])
         content_block = block_id
 
     i = 0
     while i < len(lines):
-        page, block, text, _, _ = lines[i]
+        page, block, text = lines[i].page, lines[i].block, lines[i].text
         found = detect_heading(lines, i, body_size, allow_letter_labels=seen_references)
         if found:
             label, number, consumed = found
             flush(page)
-            content, content_block = [], None
+            content, content_pages, content_block = [], [], None
             if number and "." in number:
                 heading = f"{top_level} › {number} {label}" if top_level else f"{number} {label}"
             else:
@@ -220,14 +329,14 @@ def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str],
             ref_block.append(text)
             ref_block_id = (page, block)
         else:
-            add_line(text, (page, block))
+            add_line(text, (page, block), lines[i].is_table_row)
         i += 1
 
     flush(page_count)
     if ref_block:
         references.append(" ".join(ref_block))
 
-    full_text = "\n".join(text for _, _, text, _, _ in lines)
+    full_text = "\n".join(line.text for line in lines)
     return sections, references, full_text
 
 

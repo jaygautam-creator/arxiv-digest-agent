@@ -31,6 +31,8 @@ class PaperSection(BaseModel):
     content: str
     page_start: int = 1
     page_end: int = 1
+    # Page of each paragraph in `content` (paragraphs are separated by blank lines), when known
+    paragraph_pages: list[int] | None = None
 
 
 class ParsedPaper(BaseModel):
@@ -46,10 +48,17 @@ class TextChunk(BaseModel):
     """A semantic text chunk with structural provenance for retrieval."""
     chunk_id: str
     section_heading: str
-    page_number: int
+    page_number: int  # page where the chunk's text starts
     text: str
     token_count: int = 0
     dense_embedding: list[float] | None = None
+    page_end: int | None = None  # last page the chunk's text reaches, when it spans pages
+
+    @property
+    def page_label(self) -> str:
+        if self.page_end and self.page_end != self.page_number:
+            return f"{self.page_number}–{self.page_end}"
+        return str(self.page_number)
 
 
 class ExecutiveBriefing(BaseModel):
@@ -130,6 +139,7 @@ class QACitation(BaseModel):
     section: str
     page: int
     excerpt: str
+    page_label: str = ""  # e.g. "21–22" when the passage spans pages
     relevance_score: float = 0.0
 
 

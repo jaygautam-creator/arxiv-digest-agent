@@ -69,3 +69,25 @@ def test_pymupdf_detects_numbered_and_wrapped_headings(tmp_path):
     assert "1 Introduction" in headings
     assert "1 Introduction › 3.2 Ridge Regression for Cache Merging" in headings
     assert len(references) == 2 and references[0].startswith("[1]")
+
+
+def test_table_rows_rebuilt_with_column_headers():
+    from arxiv_digest.nodes.pdf_parser import Geometry, _render_table, _table_rows
+
+    def g(block, y, x0, x1, text):
+        return Geometry(block, y, y + 8, x0, x1, text)
+
+    # Header row in its own block above the data; each data cell is its own PDF line,
+    # and two numeric cells were merged into one line by the PDF generator.
+    header = [g(1, 90, 60, 80, "Full"), g(1, 90, 95, 115, "Ours"), g(1, 90, 130, 170, "Ratio"), g(1, 78, 55, 120, "KV Cache")]
+    data = [g(2, 100, 10, 50, "LLaMA-3-8B"), g(2, 100.4, 62, 75, "8G"), g(2, 100.2, 97, 150, "4.8G 60%")]
+    rows = _table_rows(data)
+    assert [[text for _, text in row] for row in rows] == [["LLaMA-3-8B", "8G", "4.8G", "60%"]]
+    assert _render_table(rows, 100, header + data, block=2) == ["LLaMA-3-8B | Full: 8G | Ours: 4.8G | Ratio: 60%"]
+
+
+def test_prose_block_is_not_a_table():
+    from arxiv_digest.nodes.pdf_parser import Geometry, _table_rows
+
+    prose = [Geometry(1, y, y + 8, 10, 300, t) for y, t in [(100, "GRKV raises the average"), (112, "score from 27.44 to 29.09"), (124, "with SnapKV.")]]
+    assert _table_rows(prose) is None
