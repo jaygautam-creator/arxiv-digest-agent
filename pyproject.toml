@@ -35,6 +35,8 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10",
 ]
 # Local dense retrieval + reranking (ONNX on CPU, no PyTorch). Without it, retrieval is TF-IDF only.
 embeddings = [
@@ -51,3 +53,17 @@ packages = ["arxiv_digest"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, bugbear, import order, pyupgrade, simplify
+select = ["F", "E", "W", "B", "I", "UP", "SIM"]
+ignore = ["SIM905"]  # a """...""".split() word list reads better than a 150-line literal
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true

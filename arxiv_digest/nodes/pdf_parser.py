@@ -9,13 +9,11 @@ Project: 8byte Assessment
 """
 
 import logging
-import os
 import re
 import time
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple
-import urllib.request
-import httpx
 
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.models import PaperMetadata, PaperSection, ParsedPaper
@@ -23,9 +21,14 @@ from arxiv_digest.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-# Known scientific paper section heading patterns
+# Section names recognised by the pypdf fallback, which has no font information to go on.
+KNOWN_SECTION_NAMES = (
+    "Abstract", "Introduction", "Background", "Related Work", "Methodology", "Method", "Architecture",
+    "System Design", "Approach", "Experiments", "Experimental Setup", "Results", "Evaluation", "Discussion",
+    "Limitations", "Broader Impacts", "Conclusion", "Conclusions", "References", "Bibliography",
+)  # fmt: skip
 SECTION_HEADER_REGEX = re.compile(
-    r"^(?:(?:[0-9IVXLCDM]+\.?\s+)?(?:Abstract|Introduction|Background|Related Work|Methodology|Method|Architecture|System Design|Approach|Experiments|Experimental Setup|Results|Evaluation|Discussion|Limitations|Broader Impacts|Conclusion|Conclusions|References|Bibliography))\b",
+    r"^(?:[0-9IVXLCDM]+\.?\s+)?(?:" + "|".join(KNOWN_SECTION_NAMES) + r")\b",
     re.IGNORECASE,
 )
 
@@ -79,8 +82,17 @@ NUMBERED_HEADING_REGEX = re.compile(r"^((?:\d{1,2}|[A-H])(?:\.\d{1,2}){0,2})\.?\
 CONTINUATION_ENDINGS = ("and", "of", "for", "the", "with", "a", "an", "to", "in", "on", "via", "through", "-", ",", ":")
 REFERENCE_START_REGEX = re.compile(r"^\[\d{1,3}\]")
 UNNUMBERED_HEADINGS = {
-    "abstract", "references", "bibliography", "acknowledgments", "acknowledgements",
-    "appendix", "limitations", "conclusion", "conclusions", "discussion", "broader impact",
+    "abstract",
+    "references",
+    "bibliography",
+    "acknowledgments",
+    "acknowledgements",
+    "appendix",
+    "limitations",
+    "conclusion",
+    "conclusions",
+    "discussion",
+    "broader impact",
 }
 
 
@@ -146,20 +158,26 @@ def _table_rows(geometry: list[Geometry]) -> list[list[tuple[float, str]]] | Non
 def _column_header(x_center: float, table_top: float, candidates: list[Geometry]) -> str | None:
     """The lowest short text above the table whose horizontal extent covers this column."""
     covering = [
-        g for g in candidates
+        g
+        for g in candidates
         if g.x0 - 3 <= x_center <= g.x1 + 3 and table_top - HEADER_SEARCH_HEIGHT <= g.y0 < table_top
     ]
     return max(covering, key=lambda g: g.y0).text if covering else None
 
 
-def _render_table(rows: list[list[tuple[float, str]]], table_top: float, page_geometry: list[Geometry], block: int) -> list[str]:
+def _render_table(
+    rows: list[list[tuple[float, str]]], table_top: float, page_geometry: list[Geometry], block: int
+) -> list[str]:
     """Render rows as "label | header: value | ...", attaching column headers found above the table."""
     # A column header sits over one column; text spanning three or more columns is a group
     # label (e.g. "Llama-3.1-8B-Instruct, 10% Cache Budget"), not a header.
     column_centers = [x for x, _ in max(rows, key=len)[1:]]
     candidates = [
-        g for g in page_geometry
-        if g.block != block and len(g.text) <= 40 and any(ch.isalpha() for ch in g.text)
+        g
+        for g in page_geometry
+        if g.block != block
+        and len(g.text) <= 40
+        and any(ch.isalpha() for ch in g.text)
         and not NUMERIC_CELL.match(g.text.replace(" ", ""))
         and sum(g.x0 - 3 <= x <= g.x1 + 3 for x in column_centers) < 3
     ]
@@ -204,7 +222,7 @@ def _read_lines(doc) -> tuple[list[Line], float]:
             table_top = min(g.y0 for g in geometry)
             for text in _render_table(rows, table_top, page_geometry, block_idx):
                 lines.append(Line(page_idx, block_idx, text, False, block_lines[0].size, True))
-    body_size = max(size_weight, key=size_weight.get) if size_weight else 10.0
+    body_size = max(size_weight, key=lambda size: size_weight[size]) if size_weight else 10.0
     return lines, body_size
 
 
@@ -258,7 +276,7 @@ def detect_heading(
 
 def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str], str]:
     """Extract sections (with subsection paths), references, and full text using PyMuPDF."""
-    import pymupdf  # type: ignore
+    import pymupdf
 
     doc = pymupdf.open(str(pdf_path))
     lines, body_size = _read_lines(doc)
@@ -280,10 +298,15 @@ def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str],
 
     def flush(end_page: int) -> None:
         if content:
-            sections.append(PaperSection(
-                heading=heading, content="\n\n".join(content), page_start=start_page, page_end=end_page,
-                paragraph_pages=list(content_pages),
-            ))
+            sections.append(
+                PaperSection(
+                    heading=heading,
+                    content="\n\n".join(content),
+                    page_start=start_page,
+                    page_end=end_page,
+                    paragraph_pages=list(content_pages),
+                )
+            )
 
     def add_line(text: str, block_id: tuple[int, int], is_table_row: bool) -> None:
         nonlocal content_block
@@ -322,7 +345,9 @@ def extract_with_pymupdf(pdf_path: Path) -> tuple[list[PaperSection], list[str],
         if in_references:
             # A new entry starts at a "[n]" marker; for author-year styles, at a new PDF block.
             numbered = REFERENCE_START_REGEX.match(text) is not None
-            new_block = ref_block_id not in (None, (page, block)) and not REFERENCE_START_REGEX.match(ref_block[0] if ref_block else "")
+            new_block = ref_block_id not in (None, (page, block)) and not REFERENCE_START_REGEX.match(
+                ref_block[0] if ref_block else ""
+            )
             if ref_block and (numbered or new_block):
                 references.append(" ".join(ref_block))
                 ref_block = []
@@ -461,7 +486,7 @@ def fetch_and_parse_node(state: AgentState, config: AgentConfig) -> AgentState:
 
     paper = state.selected_paper
     pdf_path = download_pdf(paper=paper, cache_dir=config.cache_dir, timeout=config.request_timeout)
-    
+
     if pdf_path:
         state.pdf_local_path = str(pdf_path)
     else:

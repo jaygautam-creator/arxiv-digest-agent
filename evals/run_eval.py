@@ -28,7 +28,7 @@ from arxiv_digest.nodes.arxiv_client import fetch_from_arxiv
 from arxiv_digest.nodes.chunker import chunk_and_embed_node
 from arxiv_digest.nodes.pdf_parser import fetch_and_parse_node
 from arxiv_digest.nodes.qa_agent import answer_question
-from arxiv_digest.nodes.vector_store import get_vector_store, index_chunks_node, retrieve
+from arxiv_digest.nodes.vector_store import LocalVectorStore, get_vector_store, index_chunks_node, retrieve
 from arxiv_digest.state import AgentState
 
 QUESTIONS = Path(__file__).with_name("questions.json")
@@ -61,6 +61,14 @@ def build_paper_state(arxiv_id: str, config: AgentConfig) -> AgentState:
     return state
 
 
+def store_for(state: AgentState) -> LocalVectorStore:
+    """The index built for this paper's session by the vector_indexing node."""
+    store = get_vector_store(state.session_id)
+    if store is None:
+        sys.exit(f"No index was built for {state.raw_query}")
+    return store
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--llm", action="store_true", help="also score answers from the configured LLM")
@@ -74,7 +82,8 @@ def main() -> None:
     llm = get_llm_provider(config) if args.llm else None
 
     states = {pid: build_paper_state(pid, config) for pid in spec["papers"]}
-    print(f"retrieval mode: {get_vector_store(next(iter(states.values())).session_id).mode}\n")
+    mode = store_for(next(iter(states.values()))).mode
+    print(f"retrieval mode: {mode}\n")
 
     # Guard against a stale question set: every evidence string must exist in its paper's chunks.
     for q in spec["questions"]:
@@ -87,8 +96,7 @@ def main() -> None:
     records = []
     for q in spec["questions"]:
         state = states[q["paper"]]
-        store = get_vector_store(state.session_id)
-        retrieved = retrieve(store, q["question"], config)
+        retrieved = retrieve(store_for(state), q["question"], config)
         kind = q["kind"]
         s = stats[kind]
         s["n"] += 1
@@ -103,7 +111,11 @@ def main() -> None:
             s["gated"] += ok
             label = "gated" if ok else "passed gate"
 
-        record = {**q, "retrieved": [[c.section_heading, c.page_label, round(sc, 3)] for c, sc in retrieved], "retrieval_ok": ok}
+        record = {
+            **q,
+            "retrieved": [[c.section_heading, c.page_label, round(sc, 3)] for c, sc in retrieved],
+            "retrieval_ok": ok,
+        }
         answer_note = ""
         if llm is not None:
             time.sleep(args.pause)
@@ -137,7 +149,7 @@ def main() -> None:
         print(line)
 
     if args.out:
-        args.out.write_text(json.dumps({"mode": get_vector_store(states[q["paper"]].session_id).mode, "results": records}, indent=2))
+        args.out.write_text(json.dumps({"mode": mode, "results": records}, indent=2))
 
 
 if __name__ == "__main__":

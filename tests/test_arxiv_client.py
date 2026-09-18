@@ -5,6 +5,7 @@ Project: 8byte Assessment
 """
 
 import xml.etree.ElementTree as ET
+
 from arxiv_digest.nodes.arxiv_client import parse_atom_entry
 
 SAMPLE_ATOM_ENTRY = """
@@ -55,9 +56,7 @@ def test_zero_results_relax_over_content_terms(tmp_path):
     from arxiv_digest.nodes.arxiv_client import arxiv_retrieval_node
     from arxiv_digest.state import AgentState
 
-    paper = PaperMetadata(
-        arxiv_id="1", title="t", abstract="a", pdf_url="u", abs_url="u", published_date="2026-01-01"
-    )
+    paper = PaperMetadata(arxiv_id="1", title="t", abstract="a", pdf_url="u", abs_url="u", published_date="2026-01-01")
     calls = []
 
     def fake_fetch(query=None, operator="AND", **kwargs):

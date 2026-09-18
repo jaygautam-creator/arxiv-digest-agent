@@ -5,6 +5,7 @@ Project: 8byte Assessment
 """
 
 from pathlib import Path
+
 from arxiv_digest.models import PaperMetadata
 from arxiv_digest.nodes.pdf_parser import parse_pdf_document
 
@@ -79,7 +80,12 @@ def test_table_rows_rebuilt_with_column_headers():
 
     # Header row in its own block above the data; each data cell is its own PDF line,
     # and two numeric cells were merged into one line by the PDF generator.
-    header = [g(1, 90, 60, 80, "Full"), g(1, 90, 95, 115, "Ours"), g(1, 90, 130, 170, "Ratio"), g(1, 78, 55, 120, "KV Cache")]
+    header = [
+        g(1, 90, 60, 80, "Full"),
+        g(1, 90, 95, 115, "Ours"),
+        g(1, 90, 130, 170, "Ratio"),
+        g(1, 78, 55, 120, "KV Cache"),
+    ]
     data = [g(2, 100, 10, 50, "LLaMA-3-8B"), g(2, 100.4, 62, 75, "8G"), g(2, 100.2, 97, 150, "4.8G 60%")]
     rows = _table_rows(data)
     assert [[text for _, text in row] for row in rows] == [["LLaMA-3-8B", "8G", "4.8G", "60%"]]
@@ -89,5 +95,8 @@ def test_table_rows_rebuilt_with_column_headers():
 def test_prose_block_is_not_a_table():
     from arxiv_digest.nodes.pdf_parser import Geometry, _table_rows
 
-    prose = [Geometry(1, y, y + 8, 10, 300, t) for y, t in [(100, "GRKV raises the average"), (112, "score from 27.44 to 29.09"), (124, "with SnapKV.")]]
+    prose = [
+        Geometry(1, y, y + 8, 10, 300, t)
+        for y, t in [(100, "GRKV raises the average"), (112, "score from 27.44 to 29.09"), (124, "with SnapKV.")]
+    ]
     assert _table_rows(prose) is None

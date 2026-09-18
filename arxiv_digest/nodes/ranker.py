@@ -12,12 +12,14 @@ import json
 import re
 import time
 from datetime import date
+
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import PaperMetadata
 from arxiv_digest.state import AgentState
 
-
-RECENCY_CUES = re.compile(r"\b(recent|latest|new|newest|current|state[- ]of[- ]the[- ]art|sota|20\d\d)\b", re.IGNORECASE)
+RECENCY_CUES = re.compile(
+    r"\b(recent|latest|new|newest|current|state[- ]of[- ]the[- ]art|sota|20\d\d)\b", re.IGNORECASE
+)
 
 
 def wants_recent(query: str) -> bool:
@@ -114,7 +116,9 @@ def paper_ranking_node(state: AgentState, llm: BaseLLM) -> AgentState:
     start_time = time.time()
 
     if state.selected_paper is not None:
-        state.log_step("paper_ranking", "skipped", "Paper already specified directly.", (time.time() - start_time) * 1000)
+        state.log_step(
+            "paper_ranking", "skipped", "Paper already specified directly.", (time.time() - start_time) * 1000
+        )
         return state
 
     if not state.candidate_papers:
@@ -139,7 +143,8 @@ def paper_ranking_node(state: AgentState, llm: BaseLLM) -> AgentState:
 
     state.selected_paper = state.candidate_papers[chosen_idx]
     state.selection_rationale = rationale
-    msg = f"Selected paper [{chosen_idx + 1}/{len(state.candidate_papers)}]: '{state.selected_paper.title}' - Rationale: {rationale}"
+    position = f"[{chosen_idx + 1}/{len(state.candidate_papers)}]"
+    msg = f"Selected paper {position}: '{state.selected_paper.title}' - Rationale: {rationale}"
     state.log_step("paper_ranking", "success", msg, (time.time() - start_time) * 1000)
 
     return state

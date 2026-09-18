@@ -6,11 +6,13 @@ Project: 8byte Assessment
 
 from datetime import datetime, timezone
 from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
 class PaperMetadata(BaseModel):
     """Normalized metadata for an arXiv paper."""
+
     arxiv_id: str
     title: str
     authors: list[str] = Field(default_factory=list)
@@ -27,6 +29,7 @@ class PaperMetadata(BaseModel):
 
 class PaperSection(BaseModel):
     """A distinct structural section of an extracted paper."""
+
     heading: str
     content: str
     page_start: int = 1
@@ -37,6 +40,7 @@ class PaperSection(BaseModel):
 
 class ParsedPaper(BaseModel):
     """Complete parsed output from a downloaded PDF."""
+
     metadata: PaperMetadata
     sections: list[PaperSection] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
@@ -46,6 +50,7 @@ class ParsedPaper(BaseModel):
 
 class TextChunk(BaseModel):
     """A semantic text chunk with structural provenance for retrieval."""
+
     chunk_id: str
     section_heading: str
     page_number: int  # page where the chunk's text starts
@@ -63,6 +68,7 @@ class TextChunk(BaseModel):
 
 class ExecutiveBriefing(BaseModel):
     """Structured executive briefing required by the assessment rubric."""
+
     title: str
     authors: list[str]
     arxiv_id: str
@@ -80,9 +86,7 @@ class ExecutiveBriefing(BaseModel):
     key_results_claims: list[str] = Field(
         description="Quantifiable benchmarks, empirical claims, and comparative findings"
     )
-    limitations: list[str] = Field(
-        description="Explicit technical constraints, edge cases, or acknowledged gaps"
-    )
+    limitations: list[str] = Field(description="Explicit technical constraints, edge cases, or acknowledged gaps")
     suggested_followup_questions: list[str] = Field(
         description="Targeted questions a researcher or practitioner might ask to test or extend the work"
     )
@@ -103,12 +107,13 @@ class ExecutiveBriefing(BaseModel):
         authors_str = ", ".join(self.authors) if self.authors else "Unknown Authors"
         methods = "\n".join(f"- {m}" for m in self.method_approach)
         results = "\n".join(f"- {r}" for r in self.key_results_claims)
-        limits = "\n".join(f"- {l}" for l in self.limitations)
+        limits = "\n".join(f"- {item}" for item in self.limitations)
         questions = "\n".join(f"- {q}" for q in self.suggested_followup_questions)
 
+        line_break = "  "  # two trailing spaces: a Markdown line break
         return f"""# Executive Briefing: {self.title}
 
-**Authors:** {authors_str}  
+**Authors:** {authors_str}{line_break}
 **arXiv ID:** [{self.arxiv_id}]({self.link}) | **Published:** {self.publish_date}
 
 ---
@@ -135,6 +140,7 @@ class ExecutiveBriefing(BaseModel):
 
 class QACitation(BaseModel):
     """Provenance citation linking an answer directly to source text."""
+
     chunk_id: str
     section: str
     page: int
@@ -145,6 +151,7 @@ class QACitation(BaseModel):
 
 class QAResponse(BaseModel):
     """Grounded question-answering response with citations and hallucination guard."""
+
     question: str
     answer: str
     citations: list[QACitation] = Field(default_factory=list)
@@ -154,6 +161,7 @@ class QAResponse(BaseModel):
 
 class NodeExecutionLog(BaseModel):
     """Audit log entry for a stage in the stateful graph."""
+
     node_name: str
     status: Literal["success", "warning", "error", "skipped"]
     message: str

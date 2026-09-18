@@ -35,7 +35,11 @@ def test_section_aware_chunking():
 def test_chunks_carry_exact_page_ranges():
     from arxiv_digest.nodes.chunker import create_chunks_for_section
 
-    paragraphs = ["First page sentence one. First page sentence two.", "Second page text follows here.", "Third page ends it."]
+    paragraphs = [
+        "First page sentence one. First page sentence two.",
+        "Second page text follows here.",
+        "Third page ends it.",
+    ]
     chunks = create_chunks_for_section(
         heading="3 Method",
         content="\n\n".join(paragraphs),

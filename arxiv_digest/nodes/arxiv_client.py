@@ -9,10 +9,9 @@ Project: 8byte Assessment
 import logging
 import re
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
-import urllib.request
-import httpx
 
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.models import PaperMetadata
@@ -24,8 +23,29 @@ ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 
 # Conversational words that would otherwise become mandatory AND terms in the arXiv query.
 QUERY_STOPWORDS = {
-    "recent", "latest", "new", "work", "works", "on", "for", "the", "a", "an", "in", "of", "and",
-    "to", "with", "paper", "papers", "study", "studies", "using", "about", "research", "survey",
+    "recent",
+    "latest",
+    "new",
+    "work",
+    "works",
+    "on",
+    "for",
+    "the",
+    "a",
+    "an",
+    "in",
+    "of",
+    "and",
+    "to",
+    "with",
+    "paper",
+    "papers",
+    "study",
+    "studies",
+    "using",
+    "about",
+    "research",
+    "survey",
 }
 
 
@@ -34,6 +54,8 @@ def search_terms(query: str) -> list[str]:
     tokens = re.findall(r"[a-zA-Z0-9_\-]+", query)
     terms = [t for t in tokens if len(t) > 2 and t.lower() not in QUERY_STOPWORDS]
     return terms or [t for t in tokens if len(t) > 1]
+
+
 ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -138,7 +160,7 @@ def fetch_from_arxiv(
     elif query:
         params["start"] = 0
         params["max_results"] = max_results
-        
+
         tokens = search_terms(query)
         if len(tokens) > 1:
             params["search_query"] = f" {operator} ".join(f"all:{t}" for t in tokens[:5])
@@ -151,7 +173,7 @@ def fetch_from_arxiv(
         params["sortOrder"] = "descending"
 
     url = f"{ARXIV_API_BASE}?{urlencode(params)}"
-    
+
     req = urllib.request.Request(
         url,
         headers={
@@ -159,7 +181,7 @@ def fetch_from_arxiv(
             "Accept": "*/*",
         },
     )
-    
+
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         xml_content = resp.read()
 

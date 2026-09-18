@@ -19,13 +19,13 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
+
 import numpy as np
 
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.embeddings import Embedder, Reranker, load_retrieval_models
 from arxiv_digest.models import TextChunk
 from arxiv_digest.state import AgentState
-
 
 # Function words and question scaffolding. Without this, a question such as
 # "What is the capital of France?" matches any chunk on "what/is/the" and slips
@@ -85,8 +85,9 @@ class LocalVectorStore:
         stored = [c.dense_embedding for c in self.chunks]
         dims = {len(v) for v in stored if v is not None}
         if any(v is None for v in stored) or len(dims) != 1:
+            assert self.embedder is not None  # only called when an embedder was provided
             vectors = self.embedder.embed_documents([c.text for c in self.chunks])
-            for chunk, vector in zip(self.chunks, vectors):
+            for chunk, vector in zip(self.chunks, vectors, strict=True):
                 chunk.dense_embedding = vector.tolist()
         self.dense = np.array([c.dense_embedding for c in self.chunks], dtype=np.float32)
 
@@ -122,10 +123,7 @@ class LocalVectorStore:
         num_terms = len(self.vocab)
 
         # Compute smoothed IDF: log((N + 1) / (df + 1)) + 1
-        self.idf = {
-            term: math.log((num_docs + 1) / (freq + 1)) + 1.0
-            for term, freq in doc_freqs.items()
-        }
+        self.idf = {term: math.log((num_docs + 1) / (freq + 1)) + 1.0 for term, freq in doc_freqs.items()}
 
         # Build TF-IDF document matrix
         self.matrix = np.zeros((num_docs, num_terms), dtype=np.float32)
@@ -199,6 +197,7 @@ class LocalVectorStore:
     def _hybrid_search(
         self, query: str, lexical: np.ndarray, top_k: int, dense_threshold: float, candidates: int
     ) -> list[tuple[TextChunk, float]]:
+        assert self.dense is not None and self.embedder is not None  # hybrid mode only
         dense = self.dense @ self.embedder.embed_query(query)
         if float(dense.max()) < dense_threshold:
             return []
@@ -225,7 +224,7 @@ class LocalVectorStore:
         cls, file_path: Path, embedder: Embedder | None = None, reranker: Reranker | None = None
     ) -> "LocalVectorStore":
         """Load index from serialized disk artifact."""
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
         chunks = [TextChunk.model_validate(c) for c in data["chunks"]]
         return cls(chunks=chunks, embedder=embedder, reranker=reranker)

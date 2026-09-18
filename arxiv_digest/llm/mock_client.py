@@ -6,8 +6,8 @@ Project: 8byte Assessment
 
 import json
 import re
-from arxiv_digest.llm.base import BaseLLM
 
+from arxiv_digest.llm.base import BaseLLM
 
 MOCK_TAG = "[MOCK]"
 
@@ -34,10 +34,12 @@ class MockLLM(BaseLLM):
         if "selected_index" in prompt_lower:
             # Look for index numbers or return candidate index 0
             if json_mode:
-                return json.dumps({
-                    "selected_index": 0,
-                    "rationale": "Directly addresses the primary research objective and methodology specified in the user topic."
-                })
+                return json.dumps(
+                    {
+                        "selected_index": 0,
+                        "rationale": "Directly addresses the research objective in the user topic.",
+                    }
+                )
             return "0"
 
         # 2. Executive Briefing Generation
@@ -65,14 +67,17 @@ class MockLLM(BaseLLM):
         # 3. QA Grounded Response
         if "question" in prompt_lower or "answer based only on" in prompt_lower:
             # Check if there is context provided
-            context_match = re.search(r"Context:?\s*(.*?)(?:Question:|$)", prompt, re.DOTALL | re.IGNORECASE)
+            # The first retrieved passage follows the "[Source 1] (...):" label line.
+            context_match = re.search(
+                r"\[Source 1\][^\n]*\n(.*?)(?:\n\[Source 2\]|\nUSER QUESTION:|$)", prompt, re.DOTALL
+            )
             context_text = context_match.group(1).strip() if context_match else ""
 
             # Check if out of scope / hallucination test
             if "capital of france" in prompt_lower or "weather" in prompt_lower or "unrelated" in prompt_lower:
                 return (
                     "I cannot answer this question based on the provided paper. "
-                    "The paper does not mention or cover this topic, and my answers are strictly grounded in the document text."
+                    "The paper does not mention or cover this topic."
                 )
 
             if context_text and len(context_text) > 20:

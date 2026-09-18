@@ -4,7 +4,6 @@ Author: Jay Gautam (jaygautam561@gmail.com)
 Project: 8byte Assessment
 """
 
-import pytest
 from arxiv_digest.nodes.query_parser import parse_query_node
 from arxiv_digest.state import AgentState
 

@@ -5,6 +5,7 @@ Project: 8byte Assessment
 """
 
 from pathlib import Path
+
 from arxiv_digest.models import TextChunk
 from arxiv_digest.nodes.vector_store import LocalVectorStore
 

@@ -11,9 +11,10 @@ import json
 import logging
 import re
 import time
+
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import ExecutiveBriefing
-from arxiv_digest.state import AgentState
+from arxiv_digest.state import AgentState, StepStatus
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,7 @@ def prose_only(text: str) -> str:
 
     A table's row/column structure is lost in extraction, which invites misattributed numbers.
     """
-    return "\n\n".join(
-        p for p in text.split("\n\n") if len(p.split()) >= 4 and not is_table_like(p)
-    )
+    return "\n\n".join(p for p in text.split("\n\n") if len(p.split()) >= 4 and not is_table_like(p))
 
 
 def build_summarization_context(state: AgentState, max_chars: int = 14000) -> str:
@@ -60,13 +59,24 @@ def build_summarization_context(state: AgentState, max_chars: int = 14000) -> st
     # Prioritize the sections a briefing needs. Headings carry their parent path
     # ("5 Results › 5.2 ..."), so subsections match via their parent's name.
     priority_keywords = [
-        "intro", "method", "approach", "architect", "design", "result", "experiment",
-        "eval", "limit", "discuss", "conclu",
+        "intro",
+        "method",
+        "approach",
+        "architect",
+        "design",
+        "result",
+        "experiment",
+        "eval",
+        "limit",
+        "discuss",
+        "conclu",
     ]
     main_body = [s for s in parsed.sections if not APPENDIX_HEADING.match(s.heading)]
-    selected_sections = [
-        s for s in main_body if any(kw in s.heading.lower() for kw in priority_keywords)
-    ] or main_body[:4] or parsed.sections[:4]
+    selected_sections = (
+        [s for s in main_body if any(kw in s.heading.lower() for kw in priority_keywords)]
+        or main_body[:4]
+        or parsed.sections[:4]
+    )
 
     # Share the budget fairly so a long introduction cannot crowd out results and limitations;
     # budget a short section leaves unused rolls over to the ones after it.
@@ -189,7 +199,7 @@ Respond ONLY in valid JSON conforming to this schema:
   "arxiv_id": "{paper.arxiv_id}",
   "publish_date": "{paper.published_date}",
   "link": "{paper.abs_url}",
-  "summary_plain_english": "<1 clear paragraph explaining why this paper matters and its practical significance to an engineer>",
+  "summary_plain_english": "<1 paragraph: why this paper matters and its practical significance to an engineer>",
   "problem_statement": "<Precise description of the specific bottleneck, failure mode, or gap addressed>",
   "method_approach": [
     "<Technical bullet 1 on the core mechanism/architecture>",
@@ -213,6 +223,7 @@ Respond ONLY in valid JSON conforming to this schema:
 """
 
     system_prompt = "You are a rigorous AI research scientist. You always return valid JSON and never skip limitations."
+    status: StepStatus
     try:
         state.briefing = _generate_briefing(llm, prompt, system_prompt, state)
         status, msg = "success", f"Generated executive briefing for '{state.briefing.title}'."
@@ -220,7 +231,9 @@ Respond ONLY in valid JSON conforming to this schema:
         # Degrade to an honest abstract-only briefing so metadata and QA remain usable.
         logger.warning("Summarization failed (%s); using abstract-only briefing.", _first_line(e))
         state.briefing = degraded_briefing(state, "the LLM summarization step failed")
-        state.add_warning(f"Summarization failed ({_first_line(e)}); briefing contains arXiv metadata and abstract only.")
+        state.add_warning(
+            f"Summarization failed ({_first_line(e)}); briefing contains arXiv metadata and abstract only."
+        )
         status, msg = "warning", "Summarization failed; produced abstract-only briefing."
 
     state.is_complete = True

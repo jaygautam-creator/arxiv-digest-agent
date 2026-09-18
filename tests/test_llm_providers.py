@@ -80,9 +80,8 @@ def test_retry_recovers_from_overload():
 
 
 def test_client_errors_are_not_retried():
-    with patch("httpx.Client.post", return_value=_response(400)) as post, patch("time.sleep"):
-        with pytest.raises(LLMError):
-            post_with_retry("https://x", {})
+    with patch("httpx.Client.post", return_value=_response(400)) as post, patch("time.sleep"), pytest.raises(LLMError):
+        post_with_retry("https://x", {})
     assert post.call_count == 1
 
 
@@ -156,16 +155,24 @@ def test_recency_only_counts_when_query_asks_for_it():
 
     def paper(published: str) -> PaperMetadata:
         return PaperMetadata(
-            arxiv_id="x", title="KV cache compression", abstract="KV cache compression for LLMs",
-            pdf_url="u", abs_url="u", published_date=published,
+            arxiv_id="x",
+            title="KV cache compression",
+            abstract="KV cache compression for LLMs",
+            pdf_url="u",
+            abs_url="u",
+            published_date=published,
         )
 
     assert wants_recent("recent work on KV-cache compression")
     assert not wants_recent("KV-cache compression")
-    assert recency_score(paper("2026-09-01"), today=date(2026, 9, 18)) > recency_score(paper("2024-10-04"), today=date(2026, 9, 18))
+    assert recency_score(paper("2026-09-01"), today=date(2026, 9, 18)) > recency_score(
+        paper("2024-10-04"), today=date(2026, 9, 18)
+    )
 
     new, old = paper(date.today().isoformat()), paper("2015-01-01")
-    assert compute_heuristic_score(new, "recent KV cache compression") > compute_heuristic_score(old, "recent KV cache compression")
+    assert compute_heuristic_score(new, "recent KV cache compression") > compute_heuristic_score(
+        old, "recent KV cache compression"
+    )
     assert compute_heuristic_score(new, "KV cache compression") == compute_heuristic_score(old, "KV cache compression")
 
 
@@ -177,21 +184,28 @@ def test_auto_prefers_groq_when_both_keys_present(clean_env, monkeypatch):
 
 def test_error_messages_are_short():
     body = {"error": {"code": 429, "message": "You exceeded your current quota.\nDetails follow..."}}
-    with patch("httpx.Client.post", return_value=_response(429, body)), patch("time.sleep"):
-        with pytest.raises(LLMError) as exc:
-            post_with_retry("https://x", {}, max_attempts=1)
+    with (
+        patch("httpx.Client.post", return_value=_response(429, body)),
+        patch("time.sleep"),
+        pytest.raises(LLMError) as exc,
+    ):
+        post_with_retry("https://x", {}, max_attempts=1)
     assert "You exceeded your current quota." in str(exc.value)
     assert "Details follow" not in str(exc.value)
 
 
 def test_summarizer_reasks_once_on_malformed_json():
     from arxiv_digest.llm.base import BaseLLM
-    from arxiv_digest.models import ParsedPaper, PaperSection
+    from arxiv_digest.models import PaperSection, ParsedPaper
     from arxiv_digest.nodes.summarizer import summarize_briefing_node
 
     valid = {
-        "summary_plain_english": "s", "problem_statement": "p", "method_approach": ["m"],
-        "key_results_claims": ["r"], "limitations": ["l"], "suggested_followup_questions": ["q"],
+        "summary_plain_english": "s",
+        "problem_statement": "p",
+        "method_approach": ["m"],
+        "key_results_claims": ["r"],
+        "limitations": ["l"],
+        "suggested_followup_questions": ["q"],
     }
 
     class FlakyLLM(BaseLLM):
@@ -217,9 +231,11 @@ def test_summarizer_reasks_once_on_malformed_json():
 def test_prose_only_drops_flattened_tables_and_labels():
     from arxiv_digest.nodes.summarizer import prose_only
 
-    text = "\n\n".join([
-        "GRKV raises the average score from 33.96 to 34.58 with SnapKV.",
-        "SnapKV 3.24 59.00 23.20 4.00 1.40 17.00 15.10 78.40 54.20 27.44 0/13",
-        "niah_mk1",
-    ])
+    text = "\n\n".join(
+        [
+            "GRKV raises the average score from 33.96 to 34.58 with SnapKV.",
+            "SnapKV 3.24 59.00 23.20 4.00 1.40 17.00 15.10 78.40 54.20 27.44 0/13",
+            "niah_mk1",
+        ]
+    )
     assert prose_only(text) == "GRKV raises the average score from 33.96 to 34.58 with SnapKV."

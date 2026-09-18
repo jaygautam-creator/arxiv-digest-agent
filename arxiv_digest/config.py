@@ -7,6 +7,7 @@ Project: 8byte Assessment
 import os
 from enum import Enum
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +30,7 @@ def _is_placeholder(value: str | None) -> bool:
 
 class LLMProviderType(str, Enum):
     """Supported LLM providers."""
+
     GEMINI = "gemini"
     GROQ = "groq"
     OLLAMA = "ollama"
@@ -46,7 +48,7 @@ class AgentConfig(BaseModel):
 
     groq_api_key: str | None = Field(default=None)
     groq_model: str = Field(default="openai/gpt-oss-120b")
-    
+
     ollama_base_url: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3")
 

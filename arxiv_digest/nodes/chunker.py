@@ -9,8 +9,9 @@ Project: 8byte Assessment
 
 import re
 import time
+
 from arxiv_digest.config import AgentConfig
-from arxiv_digest.models import ParsedPaper, TextChunk
+from arxiv_digest.models import TextChunk
 from arxiv_digest.state import AgentState
 
 
@@ -48,7 +49,7 @@ def create_chunks_for_section(
     # Units are sentences, or whole rows for reconstructed tables ("label | v1 | v2"),
     # which must stay on their own lines so values remain attached to their row.
     units: list[tuple[str, int, bool]] = []
-    for paragraph, page in zip(raw_paragraphs, paragraph_pages):
+    for paragraph, page in zip(raw_paragraphs, paragraph_pages, strict=True):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
