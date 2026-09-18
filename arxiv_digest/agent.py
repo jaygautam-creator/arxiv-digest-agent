@@ -5,12 +5,12 @@ Project: 8byte Assessment
 """
 
 from pathlib import Path
+
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.graph import ProgressCallback, ResearchStateGraph
 from arxiv_digest.llm import get_llm_provider
 from arxiv_digest.llm.base import BaseLLM
-from arxiv_digest.models import ExecutiveBriefing, QAResponse
-from arxiv_digest.nodes.qa_agent import answer_question
+from arxiv_digest.models import QAResponse
 from arxiv_digest.state import AgentState
 
 
@@ -35,18 +35,14 @@ class ArxivDigestAgent:
         return self.graph.execute(query=query, on_progress=on_progress)
 
     def ask(self, state: AgentState, question: str) -> QAResponse:
-        """Query the paper using grounded retrieval-augmented generation.
+        """Answer one question by running the graph's `ask` entry point (answer_question → persist_session).
 
-        The session file is re-saved after every turn so QA history survives a restart.
+        The turn is appended to `state.qa_history` and the session file is re-saved.
         """
-        response = answer_question(
-            question=question,
-            state=state,
-            llm=self.llm,
-            config=self.config,
-        )
-        state.save_session(self.config.sessions_dir)
-        return response
+        state = self.graph.ask(state, question)
+        if state.current_node == "error":
+            return QAResponse(question=question, answer=state.errors[-1], is_grounded=False, confidence_score=0.0)
+        return QAResponse.model_validate(state.qa_history[-1])
 
     def load_session(self, session_path: str | Path) -> AgentState:
         """Restore a previously analyzed paper session from disk."""

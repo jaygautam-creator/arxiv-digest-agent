@@ -7,6 +7,7 @@ Project: 8byte Assessment
 import argparse
 import sys
 from pathlib import Path
+
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -16,6 +17,7 @@ from rich.text import Text
 from arxiv_digest.agent import ArxivDigestAgent
 from arxiv_digest.config import AgentConfig, LLMProviderType
 from arxiv_digest.embeddings import fastembed_available
+from arxiv_digest.graph import build_research_graph
 from arxiv_digest.llm import ProviderConfigError, describe_provider
 from arxiv_digest.state import AgentState
 
@@ -38,7 +40,9 @@ def print_briefing(state: AgentState) -> None:
 
     b = state.briefing
     md_content = b.to_markdown()
-    console.print(Panel(Markdown(md_content), title="[bold green]Executive Briefing[/bold green]", border_style="green"))
+    console.print(
+        Panel(Markdown(md_content), title="[bold green]Executive Briefing[/bold green]", border_style="green")
+    )
 
 
 def run_qa_interactive_loop(agent: ArxivDigestAgent, state: AgentState) -> None:
@@ -71,7 +75,7 @@ def run_qa_interactive_loop(agent: ArxivDigestAgent, state: AgentState) -> None:
         console.print()
         if response.is_grounded:
             console.print(Panel(response.answer, title="[bold green]Answer[/bold green]", border_style="green"))
-            
+
             if response.citations:
                 cite_table = Table(title="Retrieved Provenance & Citations", show_header=True, header_style="bold blue")
                 cite_table.add_column("Section", style="cyan", width=25)
@@ -82,19 +86,19 @@ def run_qa_interactive_loop(agent: ArxivDigestAgent, state: AgentState) -> None:
                     cite_table.add_row(c.section, c.page_label or str(c.page), c.excerpt)
                 console.print(cite_table)
         else:
-            console.print(Panel(
-                f"[yellow]{response.answer}[/yellow]",
-                title="[bold yellow]Ungrounded / Out-of-Scope Query[/bold yellow]",
-                border_style="yellow",
-            ))
+            console.print(
+                Panel(
+                    f"[yellow]{response.answer}[/yellow]",
+                    title="[bold yellow]Ungrounded / Out-of-Scope Query[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
         console.print()
 
 
 def main() -> None:
     """Main CLI entrypoint."""
-    parser = argparse.ArgumentParser(
-        description="Autonomous arXiv Paper Digest & QA Agent (Jay Gautam for 8byte)"
-    )
+    parser = argparse.ArgumentParser(description="Autonomous arXiv Paper Digest & QA Agent (Jay Gautam for 8byte)")
     parser.add_argument(
         "query",
         nargs="?",
@@ -127,12 +131,21 @@ def main() -> None:
         help="Export executive briefing as Markdown to specified path",
     )
     parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="Print the agent's state graph as a Mermaid diagram and exit",
+    )
+    parser.add_argument(
         "--no-interactive",
         action="store_true",
         help="Do not enter interactive QA loop after generating briefing",
     )
 
     args = parser.parse_args()
+
+    if args.graph:
+        print(build_research_graph().to_mermaid())
+        return
 
     print_banner()
 
@@ -149,8 +162,13 @@ def main() -> None:
         sys.exit(2)
 
     console.print(f"[bold]LLM Provider:[/bold] [cyan]{describe_provider(config)}[/cyan]")
-    retrieval = "TF-IDF only" if config.retrieval_mode == "tfidf" or not fastembed_available() else (
-        f"hybrid ({config.embedding_model}" + (f" + {config.reranker_model} reranker)" if config.reranker_model else ")")
+    retrieval = (
+        "TF-IDF only"
+        if config.retrieval_mode == "tfidf" or not fastembed_available()
+        else (
+            f"hybrid ({config.embedding_model}"
+            + (f" + {config.reranker_model} reranker)" if config.reranker_model else ")")
+        )
     )
     console.print(f"[bold]Retrieval:[/bold] [cyan]{retrieval}[/cyan]")
     if config.provider == LLMProviderType.MOCK:
@@ -176,6 +194,7 @@ def main() -> None:
         console.print(f"[bold]Target Query:[/bold] [yellow]{args.query}[/yellow]\n")
 
         with console.status("[bold cyan]Executing state graph pipeline...[/bold cyan]") as status:
+
             def on_progress(node_name: str, node_status: str, msg: str):
                 status.update(f"[cyan][{node_name}][/cyan] {msg}")
 

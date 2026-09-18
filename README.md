@@ -1,5 +1,6 @@
 # Autonomous arXiv Paper Digest & QA Agent
 
+[![CI](https://github.com/jaygautam-creator/arxiv-digest-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jaygautam-creator/arxiv-digest-agent/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
@@ -15,7 +16,7 @@ An autonomous, stateful research agent designed to streamline literature review 
 - [1. Architecture & State Graph](#1-architecture--state-graph)
   - [Graph Flow Diagram](#graph-flow-diagram)
   - [State Shape (`AgentState`)](#state-shape-agentstate)
-  - [Graph Nodes & Edge Routing](#graph-nodes--edge-routing)
+  - [What Each Node Does](#what-each-node-does)
 - [2. Quickstart & Setup](#2-quickstart--setup)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -34,57 +35,45 @@ An autonomous, stateful research agent designed to streamline literature review 
 
 ### Graph Flow Diagram
 
+The graph is defined as data in [`arxiv_digest/graph.py`](arxiv_digest/graph.py): named nodes, edges with routing conditions, and two entry points. One runner executes it. The diagram below is generated from that definition (`python -m arxiv_digest --graph`), and a test fails if it drifts from the code.
+
 ```mermaid
 flowchart TD
-    Start([User Input: Topic or arXiv ID]) --> Q[Node 1: Query Understanding]
-    Q --> R[Node 2: arXiv Retrieval]
-    
-    R --> C1{Intent == TOPIC_SEARCH \n& Candidates > 1?}
-    C1 -- Yes --> S[Node 3: Candidate Ranking]
-    C1 -- No --> F[Node 4: Fetch & Parse PDF]
-    S --> F
-    
-    F --> CH[Node 5: Section-Aware Chunking]
-    CH --> V[Node 6: Local Vector Indexing]
-    V --> B[Node 7: Summarize Executive Briefing]
-    
-    B --> Disk[(Session Persistence to Disk)]
-    B --> QA[Interactive Grounded QA Loop]
-    
-    QA --> QAGate{Query Relevance \n>= Similarity Threshold?}
-    QAGate -- Yes --> QAResult[Answer with Section/Page Citations]
-    QAGate -- No --> QARefuse[Strict Refusal: Prevents Hallucination]
+    analyze_in([analyze]) --> query_understanding
+    ask_in([ask]) --> answer_question
+    subgraph analyze_flow [analyze]
+        query_understanding["query_understanding<br/><small>classify topic vs arXiv ID</small>"]
+        arxiv_retrieval["arxiv_retrieval<br/><small>query the arXiv Atom API</small>"]
+        paper_ranking["paper_ranking<br/><small>choose one candidate</small>"]
+        fetch_and_parse["fetch_and_parse<br/><small>download PDF, extract sections</small>"]
+        chunk_and_embed["chunk_and_embed<br/><small>section-bounded chunks</small>"]
+        vector_indexing["vector_indexing<br/><small>TF-IDF / hybrid index</small>"]
+        summarize_briefing["summarize_briefing<br/><small>structured briefing</small>"]
+    end
+    subgraph ask_flow [ask]
+        answer_question["answer_question<br/><small>grounded RAG answer</small>"]
+    end
+    persist_session["persist_session<br/><small>save state as JSON</small>"]
+    query_understanding --> arxiv_retrieval
+    arxiv_retrieval -- topic search --> paper_ranking
+    arxiv_retrieval -- direct ID --> fetch_and_parse
+    paper_ranking --> fetch_and_parse
+    fetch_and_parse --> chunk_and_embed
+    chunk_and_embed --> vector_indexing
+    vector_indexing --> summarize_briefing
+    summarize_briefing --> persist_session
+    answer_question --> persist_session
+    persist_session --> finished([end])
+    failed([error: stop, errors kept in state])
+    analyze_flow -. any node error .-> failed
+    ask_flow -. any node error .-> failed
+    persist_session -. error .-> failed
 ```
 
-### ASCII Pipeline Representation
-```
-[User Input] 
-      │
-      ▼
-┌──────────────────────┐
-│  Query Understanding │ -> Classifies Intent (DIRECT_ID vs TOPIC_SEARCH)
-└──────────┬───────────┘
-           ▼
-┌──────────────────────┐
-│   arXiv Retrieval    │ -> Queries official arXiv Atom XML feed
-└──────────┬───────────┘
-           │
-           ├─► (Topic Query?) ──► [ Paper Ranking ] ──┐
-           │                                          │
-           └─► (Direct ID) ───────────────────────────┴─► [ Fetch & Parse PDF ]
-                                                                   │
-                                                                   ▼
-                                                       [ Section-Aware Chunking ]
-                                                                   │
-                                                                   ▼
-                                                       [ Local Vector Indexing ]
-                                                                   │
-                                                                   ▼
-                                                       [ Summarize Briefing ]
-                                                                   │
-                                                                   ▼
-                                                       [ Grounded QA Loop ]
-```
+- **Entry points.** `analyze` runs retrieval through the briefing. `ask` runs one QA turn on the same state. The interactive REPL just calls `ask` once per question.
+- **Conditional edge.** After `arxiv_retrieval`, topic searches go to `paper_ranking`, while direct IDs (already resolved to one paper) skip straight to `fetch_and_parse`. Edges are checked in declaration order, and every node must have an unconditional fallback edge (`validate()` enforces this).
+- **Error routing.** A node reports failure by adding to `state.errors`. The runner then stops at the `error` terminal and returns the state with everything gathered so far. Recoverable problems (a PDF that won't download, a failed LLM summary) are handled inside the node and recorded as warnings, so the graph continues.
+- **Persistence** is its own node, shared by both entry points, so the session file is written after every analysis and every QA turn.
 
 ### State Shape (`AgentState`)
 Identifiable state persists across all nodes and serializes to disk as a complete audit trail:
@@ -103,14 +92,17 @@ class AgentState(BaseModel):
     chunks: list[TextChunk]              # Section-bounded chunks with page metadata
     vector_store_ref: str | None         # Local vector store reference
     briefing: ExecutiveBriefing | None   # Structured briefing artifact
-    qa_history: list[dict]               # Conversation history for QA turns
-    execution_logs: list[NodeExecutionLog]# Millisecond timing audit for each node
-    errors: list[str]                    # Handled failure logs
-    warnings: list[str]                  # Non-fatal warnings (e.g. OCR fallback)
-    is_complete: bool                    # Stage completion flag
+    qa_history: list[dict]               # One entry per QA turn: question, answer, citations
+    pending_question: str | None         # Input to the answer_question node
+    visited_nodes: list[str]             # Path taken through the graph, in order
+    current_node: str                    # Last node, or "end" / "error"
+    execution_logs: list[NodeExecutionLog]# Per-node status, message and duration
+    errors: list[str]                    # Failures that stopped the graph
+    warnings: list[str]                  # Recoverable problems (e.g. abstract-only fallback)
+    is_complete: bool                    # Briefing produced
 ```
 
-### Graph Nodes & Edge Routing
+### What Each Node Does
 
 1. **`query_understanding`**:
    - Parses regex patterns for modern arXiv IDs (`\d{4}\.\d{4,5}`), legacy identifiers (`cs/0101001`), and arXiv web URLs (`https://arxiv.org/abs/...`).
@@ -139,11 +131,11 @@ class AgentState(BaseModel):
    - Builds a context of about 14k characters from the abstract plus the main-body introduction, method, results, limitations and conclusion sections. The budget is shared fairly between sections, and appendices and flattened tables are left out.
    - Validates the LLM's JSON against the `ExecutiveBriefing` schema and re-asks once with the validation error if it is malformed. Title, authors, ID and date always come from arXiv, never from the LLM.
    - If the LLM fails outright, emits an abstract-only briefing whose other fields say "Not available" rather than inventing content.
-8. **`qa_loop`**:
-   - Interactive CLI REPL (not a graph node; it reads the shared state the graph produced).
+8. **`answer_question`** (entry point `ask`, run once per question):
    - Retrieves the top 4 chunks. If the question isn't similar enough to any chunk, it refuses without calling the LLM: embedding similarity < 0.55 in hybrid mode, TF-IDF cosine < 0.05 otherwise. Both thresholds were chosen from the evaluation set.
    - Otherwise the LLM answers only from those chunks, citing `[Source n]`. If they don't contain the answer, it must start its reply with `NOT IN PAPER:`, and the answer is shown as not grounded.
-   - Every turn is appended to `qa_history`, and the session file is re-saved.
+   - Every turn is appended to `qa_history`.
+9. **`persist_session`**: writes the whole state to `data/sessions/session_<id>.json`, after both `analyze` and every `ask`.
 
 ---
 
@@ -315,7 +307,7 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 ## 6. Design Decisions & Tradeoffs
 
-**Explicit graph in plain Python.** Each stage is a function `AgentState → AgentState`, and `graph.py` runs them in order with one conditional edge: ranking runs only for topic searches with more than one candidate. A node that records an error stops the graph. A linear pipeline with one branch didn't need LangGraph: every node stays unit-testable, and the whole control flow fits in about 100 lines.
+**Explicit graph without a framework.** Nodes, edges, routing conditions and entry points are declared as data in `build_research_graph()`. A small `StateGraph` class (about 120 lines) validates the graph, runs it, and renders the diagram. It uses the same model as LangGraph: typed shared state, conditional edges, several entry points. But at 9 nodes and one branch, it didn't justify a framework dependency, and every node stays a plain function that can be unit-tested. QA is a node on the same graph (entry point `ask`), so questions get the same logging, error routing and persistence as the analysis.
 
 **State.** `AgentState` (Pydantic) holds the query, candidates, parsed sections, chunks with embeddings, briefing, QA history and a per-node log. It is saved as JSON after the graph and after every QA turn, so `--session` resumes a conversation without re-parsing or re-embedding.
 
@@ -338,14 +330,21 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 ## 7. Running Tests
 
-44 offline tests use a mock LLM, a fake embedder and a synthetic PDF, so no network, keys or model downloads are needed:
+51 offline tests use a mock LLM, a fake embedder and a generated PDF, so no network, API keys or model downloads are needed. CI runs the same checks on every push (Python 3.10 and 3.13):
 
 ```bash
-pytest tests/ -q
-# 44 passed in 0.3s
+pytest tests/ -q                                   # 51 passed
+ruff check arxiv_digest evals tests                # lint (pyflakes, bugbear, import order, ...)
+ruff format --check arxiv_digest evals tests       # formatting
+mypy arxiv_digest evals                            # type checking
 ```
 
-They cover query parsing, Atom parsing and query relaxation, heading detection and table-row reconstruction, page-accurate chunking, TF-IDF and hybrid retrieval (gate, fusion, reranking), grounded and refused QA, provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
+The tests cover:
+- **Graph:** routing for topic vs. ID, error routing, the `ask` entry point, validation, the cycle guard, and README/diagram sync.
+- **Parsing:** headings, table rows with column headers, and page-accurate chunks.
+- **Retrieval:** TF-IDF and hybrid (gate, fusion, reranking).
+- **QA:** grounded answers and refusals.
+- **LLM layer:** provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
 
 ---
 
@@ -354,7 +353,8 @@ They cover query parsing, Atom parsing and query relaxation, heading detection a
 ```
 .
 ├── README.md
-├── pyproject.toml
+├── pyproject.toml               # dependencies, ruff and mypy config
+├── .github/workflows/ci.yml     # lint, type-check and tests on every push
 ├── .env.example                 # configuration template (copy to .env)
 ├── docs/DEVELOPER_GUIDE.md      # conventions for contributors
 ├── evals/
@@ -367,7 +367,7 @@ They cover query parsing, Atom parsing and query relaxation, heading detection a
 ├── arxiv_digest/
 │   ├── cli.py                   # Rich CLI, exports, QA REPL
 │   ├── agent.py                 # ArxivDigestAgent Python API
-│   ├── graph.py                 # stateful graph orchestration
+│   ├── graph.py                 # StateGraph (nodes, edges, runner) + the agent's graph
 │   ├── state.py                 # AgentState + session persistence
 │   ├── models.py                # Pydantic schemas (ExecutiveBriefing, TextChunk, ...)
 │   ├── config.py                # .env loading and provider selection
@@ -387,7 +387,7 @@ They cover query parsing, Atom parsing and query relaxation, heading detection a
 │       ├── gemini_client.py     # with model fallback
 │       ├── ollama_client.py
 │       └── mock_client.py       # offline placeholder provider
-└── tests/                       # 44 offline tests
+└── tests/                       # 51 offline tests
 ```
 
 ---

@@ -13,6 +13,8 @@ uv venv && source .venv/bin/activate
 uv pip install -e ".[dev,embeddings]"   # drop ",embeddings" for a TF-IDF-only install
 cp .env.example .env                     # add GROQ_API_KEY and/or GEMINI_API_KEY for live runs
 pytest tests/ -q                         # offline; no keys, network or model downloads
+ruff check arxiv_digest evals tests && ruff format --check arxiv_digest evals tests
+mypy arxiv_digest evals                  # CI runs all of these on every push
 python evals/run_eval.py                 # retrieval eval (downloads the 5 eval papers once)
 ```
 
@@ -20,7 +22,7 @@ python evals/run_eval.py                 # retrieval eval (downloads the 5 eval 
 
 | Module | Responsibility |
 |---|---|
-| `graph.py` | Runs the nodes in order; the one conditional edge (ranking only for topic searches with >1 candidate); stops at the first recorded error |
+| `graph.py` | `StateGraph` (nodes, edges, validation, runner, Mermaid export) and `build_research_graph()`, the single definition of the agent's topology |
 | `state.py` | `AgentState` (shared state) and JSON session save/load |
 | `models.py` | Pydantic schemas: `PaperMetadata`, `PaperSection`, `TextChunk`, `ExecutiveBriefing`, `QAResponse` |
 | `config.py` | `.env` loading and provider selection (`LLM_PROVIDER`, keys, models, retrieval parameters) |
@@ -50,7 +52,10 @@ json_mode)` using `post_with_retry`, add a value to `LLMProviderType`, and wire 
 and `describe_provider`.
 
 **Adding a graph node:** write `nodes/<name>.py` with a `<name>_node(state, ...)` function, add any new fields to
-`AgentState`, and insert the call (with its progress notification) in `graph.py`.
+`AgentState`, then register it in `build_research_graph()` with `add_node(...)` and `add_edge(...)`. Put conditional
+edges before the node's unconditional fallback, since edges are checked in declaration order. `validate()` rejects
+unknown targets and nodes with no way out. Regenerate the README diagram with `python -m arxiv_digest --graph`;
+`tests/test_graph.py` fails until you do.
 
 **Tuning retrieval:** chunking, top-k, thresholds and models are read from `.env` (see `.env.example`).
 Measure every change with `python evals/run_eval.py` in both `RETRIEVAL_MODE=tfidf` and `hybrid`,

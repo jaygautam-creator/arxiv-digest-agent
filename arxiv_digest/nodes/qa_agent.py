@@ -8,12 +8,13 @@ Project: 8byte Assessment
 """
 
 import logging
-import re
+import time
+
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import QACitation, QAResponse, TextChunk
 from arxiv_digest.nodes.vector_store import build_vector_store, get_vector_store, register_vector_store, retrieve
-from arxiv_digest.state import AgentState
+from arxiv_digest.state import AgentState, StepStatus
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def _strip_marker(answer: str) -> str | None:
     text = answer.strip().lstrip("*_ ")
     if not text.upper().startswith(REFUSAL_MARKER):
         return None
-    return text[len(REFUSAL_MARKER):].lstrip("*_ ").strip()
+    return text[len(REFUSAL_MARKER) :].lstrip("*_ ").strip()
 
 
 def is_refusal(answer: str) -> bool:
@@ -138,7 +139,8 @@ CONTEXT SOURCES:
 USER QUESTION:
 {question}
 
-Provide a precise, grounded answer citing specific sources. If the answer is absent from the sources, state so clearly:"""
+Provide a precise, grounded answer citing specific sources.
+If the answer is absent from the sources, state so clearly:"""
 
     try:
         answer_text = llm.generate(
@@ -173,3 +175,25 @@ Provide a precise, grounded answer citing specific sources. If the answer is abs
 
     state.record_qa_interaction(response)
     return response
+
+
+def answer_question_node(state: AgentState, llm: BaseLLM, config: AgentConfig) -> AgentState:
+    """Graph node: answer `state.pending_question` and append the turn to `state.qa_history`."""
+    start_time = time.time()
+    question = (state.pending_question or "").strip()
+    state.pending_question = None
+    if not question:
+        state.add_error("answer_question ran without a pending question.")
+        state.log_step("answer_question", "error", "No question provided.", (time.time() - start_time) * 1000)
+        return state
+    if not state.chunks:
+        state.add_error("No indexed paper in this session; run an analysis first.")
+        state.log_step("answer_question", "error", "No chunks to search.", (time.time() - start_time) * 1000)
+        return state
+
+    response = answer_question(question, state, llm, config)
+    status: StepStatus = "success" if response.is_grounded else "warning"
+    outcome = "Grounded answer" if response.is_grounded else "Not answered from the paper"
+    msg = f"{outcome} ({len(response.citations)} citations)."
+    state.log_step("answer_question", status, msg, (time.time() - start_time) * 1000)
+    return state

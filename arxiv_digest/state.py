@@ -8,16 +8,19 @@ import json
 import uuid
 from pathlib import Path
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from arxiv_digest.models import (
-    PaperMetadata,
-    ParsedPaper,
-    TextChunk,
     ExecutiveBriefing,
     NodeExecutionLog,
+    PaperMetadata,
+    ParsedPaper,
     QAResponse,
+    TextChunk,
 )
+
+StepStatus = Literal["success", "warning", "error", "skipped"]
 
 
 class AgentState(BaseModel):
@@ -27,7 +30,7 @@ class AgentState(BaseModel):
     raw_query: str = ""
     intent: Literal["TOPIC_SEARCH", "DIRECT_ID", "UNKNOWN"] = "UNKNOWN"
     parsed_arxiv_id: str | None = None
-    
+
     # Candidate retrieval & selection
     candidate_papers: list[PaperMetadata] = Field(default_factory=list)
     selected_paper: PaperMetadata | None = None
@@ -46,6 +49,10 @@ class AgentState(BaseModel):
 
     # QA conversational history & grounded responses
     qa_history: list[dict] = Field(default_factory=list)
+    pending_question: str | None = None  # input to the answer_question node
+
+    # Graph traversal: nodes executed so far, in order (across analyze and ask runs)
+    visited_nodes: list[str] = Field(default_factory=list)
 
     # Execution telemetry & resilience tracking
     execution_logs: list[NodeExecutionLog] = Field(default_factory=list)
@@ -57,7 +64,7 @@ class AgentState(BaseModel):
     def log_step(
         self,
         node_name: str,
-        status: Literal["success", "warning", "error", "skipped"],
+        status: StepStatus,
         message: str,
         duration_ms: float = 0.0,
     ) -> None:
@@ -95,6 +102,6 @@ class AgentState(BaseModel):
     @classmethod
     def load_session(cls, session_file: Path) -> "AgentState":
         """Restore an existing agent state from disk."""
-        with open(session_file, "r", encoding="utf-8") as f:
+        with open(session_file, encoding="utf-8") as f:
             data = json.load(f)
         return cls.model_validate(data)
