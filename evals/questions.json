@@ -1,0 +1,49 @@
+{
+  "_about": "Retrieval/grounding eval set. kind: lexical = question reuses the paper's wording; paraphrase = same fact, different wording; unanswerable = on-topic but not in the paper (the LLM must refuse); out_of_scope = unrelated (the similarity gate should refuse). evidence: substrings, any of which must appear in a retrieved chunk (compared ignoring case and whitespace). answer_any: for --llm runs, the answer must contain one of these.",
+  "papers": {
+    "1706.03762": "Attention Is All You Need",
+    "2604.24971": "PolyKV: A Shared Asymmetrically-Compressed KV Cache Pool for Multi-Agent LLM Inference",
+    "2410.03111": "LoRC: Low-Rank Compression for LLMs KV Cache with a Progressive Compression Strategy",
+    "2512.14946": "EVICPRESS: Joint KV-Cache Compression and Eviction for Efficient LLM Serving",
+    "2605.31105": "GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs"
+  },
+  "questions": [
+    {"paper": "1706.03762", "kind": "lexical", "question": "What BLEU score does the Transformer achieve on WMT 2014 English-to-German?", "evidence": ["28.4 BLEU"], "answer_any": ["28.4"]},
+    {"paper": "1706.03762", "kind": "lexical", "question": "What beam size was used for translation?", "evidence": ["beam size of 4"], "answer_any": ["4"]},
+    {"paper": "1706.03762", "kind": "lexical", "question": "What value of label smoothing was used during training?", "evidence": ["label smoothing of value"], "answer_any": ["0.1"]},
+    {"paper": "1706.03762", "kind": "paraphrase", "question": "What hardware were the models trained on?", "evidence": ["8 NVIDIA P100 GPUs", "8 P100 GPUs"], "answer_any": ["P100"]},
+    {"paper": "1706.03762", "kind": "paraphrase", "question": "How long did it take to train the largest model?", "evidence": ["300,000 steps (3.5 days)", "Training took 3.5 days"], "answer_any": ["3.5 days"]},
+    {"paper": "1706.03762", "kind": "paraphrase", "question": "What regularization makes the model less confident in its predictions?", "evidence": ["label smoothing of value"], "answer_any": ["label smoothing"]},
+    {"paper": "1706.03762", "kind": "out_of_scope", "question": "What is a good recipe for chocolate cake?"},
+
+    {"paper": "2604.24971", "kind": "lexical", "question": "What compression ratio does PolyKV achieve?", "evidence": ["2.91 × compression ratio", "achieving 2.91 × compression"], "answer_any": ["2.91"]},
+    {"paper": "2604.24971", "kind": "lexical", "question": "How are the keys quantized in PolyKV?", "evidence": ["Keys are quantized at int8"], "answer_any": ["int8", "q8_0"]},
+    {"paper": "2604.24971", "kind": "paraphrase", "question": "How much memory is saved when fifteen agents read the same document?", "evidence": ["97.7% reduction", "97.7% at 15 agents"], "answer_any": ["97.7"]},
+    {"paper": "2604.24971", "kind": "paraphrase", "question": "What stopped the authors from testing longer prompts?", "evidence": ["prefill attention computation OOMs"], "answer_any": ["8,000", "8000", "OOM", "memory"]},
+    {"paper": "2604.24971", "kind": "paraphrase", "question": "How are the values compressed, and to how many bits?", "evidence": ["3-bit Lloyd-Max quantization", "Lloyd-Max 3-bit for Values"], "answer_any": ["3-bit", "3 bit"]},
+    {"paper": "2604.24971", "kind": "out_of_scope", "question": "Who won the 2022 FIFA World Cup?"},
+
+    {"paper": "2410.03111", "kind": "lexical", "question": "What decomposition does LoRC apply to the key and value weight matrices?", "evidence": ["Singular Value Decomposition (SVD) on weight matrices"], "answer_any": ["SVD", "Singular Value"]},
+    {"paper": "2410.03111", "kind": "lexical", "question": "How much KV cache memory does LoRC use for LLaMA-3-8B?", "evidence": ["LLaMA-3-8B | Full: 8G | dim: 1024 | dim_c: 512 | Ours: 4.8G"], "answer_any": ["4.8"]},
+    {"paper": "2410.03111", "kind": "paraphrase", "question": "Does the method need the model to be retrained?", "evidence": ["requires no such training or fine-tuning", "without requiring model retraining"], "answer_any": ["no ", "not ", "without"]},
+    {"paper": "2410.03111", "kind": "paraphrase", "question": "How does the method decide which layers are most sensitive?", "evidence": ["condition numbers of KV matrices", "cumulative condition numbers"], "answer_any": ["condition number"]},
+    {"paper": "2410.03111", "kind": "paraphrase", "question": "What happens to the 70B model's accuracy when the early layers are compressed?", "evidence": ["drastic 68.0% decline"], "answer_any": ["68"]},
+    {"paper": "2410.03111", "kind": "unanswerable", "question": "How much energy does LoRC save per generated token?"},
+
+    {"paper": "2512.14946", "kind": "lexical", "question": "By how much does EVICPRESS reduce TTFT compared to fixed compression baselines?", "evidence": ["reduces TTFT by 1.43–3.77", "reduces TTFT by 1.43 to 3.77"], "answer_any": ["1.43", "3.77"]},
+    {"paper": "2512.14946", "kind": "lexical", "question": "Which serving systems is EVICPRESS implemented on top of?", "evidence": ["on top of vLLM v0.11.2 and LMCache"], "answer_any": ["vLLM", "LMCache"]},
+    {"paper": "2512.14946", "kind": "paraphrase", "question": "How much faster is it than the smart eviction baseline?", "evidence": ["reduces TTFT by 1.5 to 5.2"], "answer_any": ["5.2"]},
+    {"paper": "2512.14946", "kind": "paraphrase", "question": "Why are the gains smaller for mixture-of-experts models?", "evidence": ["has a small KV cache (0.0915 GB per 1K tokens)"], "answer_any": ["small"]},
+    {"paper": "2512.14946", "kind": "paraphrase", "question": "How large is the implementation?", "evidence": ["about 3K lines of code", "~3K lines of code"], "answer_any": ["3K", "3,000", "3000"]},
+    {"paper": "2512.14946", "kind": "out_of_scope", "question": "What is a good recipe for chocolate cake?"},
+
+    {"paper": "2605.31105", "kind": "lexical", "question": "Which identity does GRKV use to solve the regression efficiently?", "evidence": ["we use the Woodbury identity", "Dual solution via Woodbury"], "answer_any": ["Woodbury"]},
+    {"paper": "2605.31105", "kind": "lexical", "question": "Which attention kernel is used in the experiments?", "evidence": ["We use FlashAttention-2", "all other methods use FlashAttention-2"], "answer_any": ["FlashAttention"]},
+    {"paper": "2605.31105", "kind": "paraphrase", "question": "Does GRKV require fine-tuning the model?", "evidence": ["training-free KV-cache merg", "training-free KV- cache merging"], "answer_any": ["training-free", "training free", "no training", "does not require"]},
+    {"paper": "2605.31105", "kind": "paraphrase", "question": "Where can I download the implementation?", "evidence": ["github.com/pjunjie/GRKV"], "answer_any": ["pjunjie/GRKV"]},
+    {"paper": "2605.31105", "kind": "paraphrase", "question": "How slow is the prefill compared with other merging methods?", "evidence": ["GRKV takes 49.71 s"], "answer_any": ["49.71", "49.7"]},
+    {"paper": "2605.31105", "kind": "paraphrase", "question": "Which GPUs were used to measure latency?", "evidence": ["two A6000 GPUs"], "answer_any": ["A6000"]},
+    {"paper": "2605.31105", "kind": "unanswerable", "question": "What accuracy does GRKV reach on ImageNet classification?"},
+    {"paper": "2605.31105", "kind": "out_of_scope", "question": "What is the capital of France?"}
+  ]
+}
