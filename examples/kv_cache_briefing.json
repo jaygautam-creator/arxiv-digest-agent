@@ -1,32 +1,35 @@
 {
-  "title": "PolyKV: A Shared Asymmetrically-Compressed KV Cache Pool for Multi-Agent LLM Inference",
+  "title": "GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs",
   "authors": [
-    "Lead Researcher",
-    "Contributing Author"
+    "Junjie Peng",
+    "You Wu",
+    "Haoyi Wu",
+    "Jialong Han",
+    "Xiaohua Xie",
+    "Kewei Tu",
+    "Jianhuang Lai"
   ],
-  "arxiv_id": "mock.arxiv.id",
-  "publish_date": "2024-01-01",
-  "link": "https://arxiv.org/abs/mock.arxiv.id",
-  "summary_plain_english": "This paper introduces a transformative approach to addressing computational efficiency and memory bottlenecks in deep learning architectures. By rethinking representation and caching mechanisms, the authors achieve significant inference speedups without accuracy degradation.",
-  "problem_statement": "Modern large-scale models suffer from severe quadratic memory growth and high latency during sequence generation, severely limiting deployment on resource-constrained hardware.",
+  "arxiv_id": "2605.31105",
+  "publish_date": "2026-05-29",
+  "link": "https://arxiv.org/abs/2605.31105v2",
+  "summary_plain_english": "This paper tackles the memory bottleneck of long‑context LLM inference by introducing a training‑free KV‑cache merging technique that directly optimizes the attention output discrepancy between a compressed cache and the full cache. By formulating the merge as a ridge‑regression problem over all retained tokens, GRKV recovers information lost during span‑based eviction without costly retraining, delivering consistent accuracy gains across multiple open‑source models while adding only minimal compute overhead—making it immediately useful for engineers deploying large models with limited GPU memory.",
+  "problem_statement": "Span‑based KV‑cache eviction concentrates merges onto a few boundary tokens, creating an imbalanced merge pattern that over‑merges and discards contextual information, leading to degraded attention quality under strict cache‑budget constraints (e.g., 10% of the context).",
   "method_approach": [
-    "Formulates a sparse, adaptive compression policy targeting token redundancy.",
-    "Integrates an attention-guided dynamic pruning gate during runtime generation.",
-    "Employs selective kernel approximation to maintain long-range context fidelity."
+    "Uses a surrogate query window derived from the prompt to approximate future queries and defines a global regression objective that minimizes the cosine‑distance between compressed‑cache and full‑cache attention outputs.",
+    "Solves a ridge‑regularized linear least‑squares problem for values (closed‑form solution) and a local linearized ridge update for keys, alternating between them (one update step by default).",
+    "Employs the Woodbury identity to solve the regression in the low‑dimensional query‑window space (m≈32) instead of the full cache dimension (c≈10% of context length), drastically reducing compute and memory cost."
   ],
   "key_results_claims": [
-    "Reduces peak memory utilization by up to 4.2x during extended context generation.",
-    "Maintains 99.4% task performance across standard LLM evaluation benchmarks (MMLU, GSM8k).",
-    "Demonstrates 2.8x throughput acceleration on consumer-grade GPU clusters."
+    "On Llama-3.1-8B-Instruct (LongBench, 10% cache budget) GRKV raises the average score from 33.96 to 34.58 with SnapKV and from 36.00 to 36.58 with CriticalKV, improving 14/16 tasks in both cases.",
+    "On Mistral-7B-Instruct‑v0.3 (LongBench, 10% cache budget) GRKV improves SnapKV from 33.12 to 33.75 and CriticalKV from 33.69 to 34.30, with gains on 12/16 and 14/16 tasks respectively. Regularization λk=λv=10⁻² yields the best LongBench average (34.58) on Llama-3.1-8B‑Instruct with SnapKV (10% budget); removing regularization drops the score to 32.06, while λ=1 and λ=10⁻¹ give 34.33 and 34.29 respectively. Fixing a retained‑token ratio β=10% also attains 34.58, whereas fixing none yields 34.34."
   ],
   "limitations": [
-    "Requires hardware support for structured sparse matrix multiplication to realize maximum gains.",
-    "Evaluated primarily on autoregressive text generation, with limited exploration on multimodal inputs.",
-    "Sensitivity to ultra-high compression ratios where rare token associations may be dropped."
+    "Evaluation is limited to three open‑source English models (Llama‑3.1‑8B‑Instruct, Mistral‑7B‑Instruct‑v0.3, Qwen3‑14B) and two long‑context benchmarks (LongBench, RULER); results may not transfer to larger proprietary models or multilingual/multimodal settings.",
+    "The surrogate prompt‑derived query window is an empirical proxy; misalignment between this window and actual future queries can reduce reconstruction effectiveness, especially when pre‑fill latency dominates or when the cache budget is increased."
   ],
   "suggested_followup_questions": [
-    "How does this compression method generalize to speculative decoding workflows?",
-    "What is the quantitative latency impact when switching between dense and compressed layers?",
-    "Can the dynamic pruning thresholds be learned end-to-end via reinforcement learning?"
+    "How does GRKV perform on proprietary, higher‑parameter models (e.g., 70B‑plus) and on multilingual long‑context tasks?",
+    "Can the surrogate window be learned or adapted per head to improve alignment with diverse future query distributions?",
+    "What is the trade‑off between the number of alternating KV update steps (S) and inference latency in real‑world deployment, and can adaptive stopping criteria mitigate over‑fitting?"
   ]
 }

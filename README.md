@@ -2,13 +2,12 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 > **Author:** Jay Gautam (<jaygautam561@gmail.com>)  
 > **Target / Organization:** 8byte Engineering Assessment  
 > **Repository:** [jaygautam-creator/arxiv-digest-agent](https://github.com/jaygautam-creator/arxiv-digest-agent)
 
-An autonomous, stateful research agent designed to streamline literature review for AI researchers and engineers. Given a natural-language research topic (e.g., *"recent work on KV-cache compression for LLMs"*) or a specific arXiv paper ID/URL, the agent executes an explicit stateful graph to retrieve candidate papers, parse document structure, index chunks into a local vector store, synthesize an executive briefing, and conduct grounded follow-up Q&A with strict anti-hallucination guarantees.
+An autonomous, stateful research agent designed to streamline literature review for AI researchers and engineers. Given a natural-language research topic (e.g., *"recent work on KV-cache compression for LLMs"*) or a specific arXiv paper ID/URL, the agent executes an explicit stateful graph to retrieve candidate papers, parse document structure, index chunks into a local vector store, synthesize an executive briefing, and answer follow-up questions grounded in retrieved passages of the paper, refusing when the paper does not contain the answer.
 
 ---
 
@@ -21,19 +20,11 @@ An autonomous, stateful research agent designed to streamline literature review 
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
   - [Configuration & Free-Tier LLMs](#configuration--free-tier-llms)
+  - [Free-Tier Rate Limits](#free-tier-rate-limits)
 - [3. CLI Usage & Commands](#3-cli-usage--commands)
-- [4. Example Run Walkthrough](#4-example-run-walkthrough)
-  - [Input & Retrieval](#input--retrieval)
-  - [Generated Executive Briefing](#generated-executive-briefing)
-  - [Sample Grounded QA Exchanges](#sample-grounded-qa-exchanges)
+- [4. Example Run](#4-example-run)
 - [5. Design Decisions & Tradeoffs](#5-design-decisions--tradeoffs)
-  - [Stateful Graph vs. Monolithic Prompt Chain](#a-stateful-graph-vs-monolithic-prompt-chain)
-  - [Local Vector Store vs Heavyweight DBs](#b-local-vector-store-vs-heavyweight-external-dbs)
-  - [Section-Aware Chunking & Provenance Tracking](#c-section-aware-chunking--provenance-tracking)
-  - [Anti-Hallucination Guard & Similarity Gating](#d-anti-hallucination-guard--similarity-gating)
-  - [What I'd Do Differently With More Time](#e-what-id-do-differently-with-more-time)
-  - [Known Limitations](#f-known-limitations)
-- [6. Running Unit & Integration Tests](#6-running-unit--integration-tests)
+- [6. Running Tests](#6-running-tests)
 - [7. Project Directory Structure](#7-project-directory-structure)
 
 ---
@@ -125,30 +116,31 @@ class AgentState(BaseModel):
    - Normalizes input into canonical ID or cleans topic query for boolean retrieval.
 2. **`arxiv_retrieval`**:
    - Calls the official arXiv Atom XML feed (`https://export.arxiv.org/api/query`).
-   - Filters out conversational stopwords (`"recent"`, `"work"`, `"for"`) to generate precise `all:term1 AND all:term2` queries.
-   - Handles network timeouts and applies automatic query relaxation if zero results are returned.
+   - Filters out conversational words (`"recent"`, `"work"`, `"for"`) to build precise `all:term1 AND all:term2` queries.
+   - If nothing matches, relaxes step by step: the two leading terms with AND, then any term with OR.
 3. **`paper_ranking`**:
-   - Evaluates candidate papers using a hybrid score of title/abstract lexical overlap, publication recency, and LLM semantic judgment.
-   - Selects the single highest-signal paper and records the selection rationale.
+   - The LLM picks the most relevant candidate from titles, dates and abstracts and records a rationale. When the query asks for recent work, the prompt includes today's date and prefers newer papers when relevance is comparable.
+   - If the LLM call fails, a keyword-overlap score (plus a recency bonus for "recent" queries) picks the paper instead.
 4. **`fetch_and_parse`**:
    - Streams the PDF from arXiv with local disk caching (`data/cache/{arxiv_id}.pdf`).
-   - Uses PyMuPDF (with automatic `pypdf` fallback) to segment the paper into structural sections (Abstract, Introduction, Method, Results, Limitations, References).
-   - If a PDF is a scanned bitmap or unextractable, it gracefully recovers by indexing the validated arXiv abstract.
+   - Uses PyMuPDF font information to detect headings: bold lines at body size or larger matching `3`, `3.2 Title`, or a number and title on separate lines, which is how LaTeX renders them. Subsections keep their parent path (`4 Experiments › 4.2 Experimental Results`), and references are split into individual entries.
+   - Falls back to `pypdf` if PyMuPDF fails, and to the arXiv abstract if the PDF cannot be downloaded or has no text layer (e.g. scanned images).
 5. **`chunk_and_embed`**:
-   - Enforces strict section boundaries: chunks never cross from `Methodology` into `References`.
-   - Splits paragraphs into sentences and maintains a 150-character sliding overlap.
-   - Tags each chunk with `section_heading` and `page_number` for citation provenance.
+   - Chunks never cross a section boundary, and the References section is not indexed.
+   - Packs sentences into chunks of about 800 characters with a 150-character overlap.
+   - Tags each chunk with its section path and an approximate page number for citations.
 6. **`vector_indexing`**:
-   - Builds a self-contained local vector store using sublinear TF-IDF scaling and cosine similarity.
-   - Persists the vector index to disk for fast session reload.
+   - Builds a local vector store of sparse TF-IDF vectors (sublinear term frequency, smoothed IDF, stopwords removed) searched by cosine similarity in NumPy. These are lexical vectors, not neural embeddings (see Design Decisions).
+   - Persists the chunks to disk, and the index is rebuilt from them when a session is resumed.
 7. **`summarize_briefing`**:
-   - Assembles an executive context window prioritizing Abstract, Intro, Method, Results, and Limitations.
-   - Enforces the 7 required briefing dimensions into structured JSON and Markdown.
+   - Builds a context of about 14k characters from the abstract plus the main-body introduction, method, results, limitations and conclusion sections. The budget is shared fairly between sections, and appendices and flattened tables are left out.
+   - Validates the LLM's JSON against the `ExecutiveBriefing` schema and re-asks once with the validation error if it is malformed. Title, authors, ID and date always come from arXiv, never from the LLM.
+   - If the LLM fails outright, emits an abstract-only briefing whose other fields say "Not available" rather than inventing content.
 8. **`qa_loop`**:
-   - Interactive CLI REPL accepting user questions.
-   - Evaluates chunk relevance against a similarity threshold.
-   - If query is out of scope, triggers an explicit anti-hallucination refusal gate.
-   - If within scope, outputs grounded answers citing specific `[Section X, Page Y]`.
+   - Interactive CLI REPL (not a graph node; it reads the shared state the graph produced).
+   - Retrieves the top 4 chunks. If none scores at least 0.15, it refuses without calling the LLM.
+   - Otherwise the LLM answers only from those chunks, citing `[Source n]`. If they don't contain the answer, it must start its reply with `NOT IN PAPER:`, and the answer is shown as not grounded.
+   - Every turn is appended to `qa_history`, and the session file is re-saved.
 
 ---
 
@@ -160,37 +152,48 @@ class AgentState(BaseModel):
 
 ### Installation
 
-Clone the repository and install dependencies using `uv` (recommended) or standard `pip`:
-
 ```bash
-# 1. Clone the repository
 git clone https://github.com/jaygautam-creator/arxiv-digest-agent.git
 cd arxiv-digest-agent
 
-# 2. Setup virtual environment & install via uv
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[all]"
+# with uv
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 
-# Or using standard pip:
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[all]"
+# or with pip
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
+The LLM providers are called over plain HTTPS with `httpx`, so no vendor SDKs are needed.
+
 ### Configuration & Free-Tier LLMs
-No paid API keys are required. Configure your preferred free provider in `.env` (or run in offline `--mock` mode):
+No paid API keys are required. Copy the template and add one free key:
 
 ```bash
 cp .env.example .env
+# then set GROQ_API_KEY=... (recommended) and/or GEMINI_API_KEY=...
 ```
 
-| Provider | Setup Requirement | Cost | Notes |
+`.env` is loaded automatically and is git-ignored. With `LLM_PROVIDER=auto` (the default), the agent uses Groq if a Groq key is set, then Gemini, then Ollama (`USE_OLLAMA=true`), and finally the offline mock. Setting `LLM_PROVIDER=gemini` (or `groq`, `ollama`) without its key is a startup error, not a silent switch to mock output.
+
+| Provider | Setup | Default model | Notes |
 |---|---|---|---|
-| **Google Gemini** (Recommended) | `GEMINI_API_KEY=...` | Free Tier | Get free key at [Google AI Studio](https://aistudio.google.com/) |
-| **Groq** | `GROQ_API_KEY=...` | Free Tier | Ultra-fast Llama-3.3 inference at [Groq Console](https://console.groq.com/) |
-| **Local Ollama** | `USE_OLLAMA=true` | 100% Free / Local | Requires local [Ollama](https://ollama.com/) running `ollama run llama3` |
-| **Offline Mock** | `--mock` flag or `MOCK_LLM=true` | Zero Dependencies | Deterministic offline provider for CI/CD and testing without any keys |
+| **Groq** (recommended) | `GROQ_API_KEY` from [console.groq.com](https://console.groq.com/) | `openai/gpt-oss-120b` | Most generous free quota; fast |
+| **Google Gemini** | `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com/) | `gemini-3.8-flash`, falls back to `gemini-2.5-flash` | Small daily quota (see below) |
+| **Local Ollama** | `USE_OLLAMA=true`, `ollama run llama3` | `llama3` | Fully offline; quality depends on the local model |
+| **Offline mock** | `--mock` or `MOCK_LLM=true` | – | For tests and CI only. Output is visibly tagged `[MOCK]` placeholder text |
+
+### Free-Tier Rate Limits
+
+A topic run makes **2 LLM calls** (ranking + briefing), plus **1 per QA question**. A direct-ID run skips ranking. The limits below were observed on this project's free accounts in September 2026. Providers change them, and they vary by account.
+
+| Provider | Observed limit | What happens when it is hit |
+|---|---|---|
+| Groq `openai/gpt-oss-120b` | 1,000 requests/day; **8,000 tokens/minute**. A briefing call is about 5k tokens, so back-to-back runs can hit the per-minute cap | HTTP 429 → the client waits (honoring `Retry-After`) and retries automatically; a run may pause for up to ~20 s |
+| Gemini free tier | **20 requests/day per model**, about 6 full runs. Newer Flash models also return HTTP 503 "high demand" at busy times | Gets one short attempt, is then skipped for the rest of the session, and the next model in `GEMINI_FALLBACK_MODELS` is used. The CLI prints which model answered |
+
+If every provider fails, the briefing degrades to arXiv metadata plus the abstract, and QA answers say that the model could not be reached. Neither ever falls back to invented text.
 
 ---
 
@@ -200,150 +203,111 @@ cp .env.example .env
 # Analyze by natural-language research topic
 python -m arxiv_digest "recent work on KV-cache compression for LLMs"
 
-# Analyze by specific arXiv ID
+# Analyze by arXiv ID or URL
 python -m arxiv_digest "1706.03762"
+python -m arxiv_digest "https://arxiv.org/abs/1706.03762"
 
-# Analyze by arXiv abstract URL
-python -m arxiv_digest "https://arxiv.org/abs/2401.12345"
+# Choose a provider for one run
+python -m arxiv_digest "1706.03762" --provider groq
 
-# Run in zero-key offline mode (deterministic mock LLM)
-python -m arxiv_digest "1706.03762" --mock
+# Export the briefing
+python -m arxiv_digest "1706.03762" --export-json briefing.json --export-md briefing.md
 
-# Export structured artifacts directly
-python -m arxiv_digest "2401.12345" --export-json briefing.json --export-md briefing.md
-
-# Non-interactive mode (generate briefing and exit without entering QA REPL)
+# Generate the briefing and exit without entering the QA REPL
 python -m arxiv_digest "1706.03762" --no-interactive
 
-# Resume an existing session from disk
-python -m arxiv_digest --session data/sessions/session_a1b2c3d4.json
+# Resume a saved session straight into QA
+python -m arxiv_digest --session data/sessions/session_<id>.json
+
+# Offline smoke test without any key (placeholder output)
+python -m arxiv_digest "1706.03762" --mock
 ```
 
 ---
 
-## 4. Example Run Walkthrough
+## 4. Example Run
 
-### Input & Retrieval
-```bash
-$ python -m arxiv_digest "recent work on KV-cache compression for LLMs"
-```
-The agent parses intent as `TOPIC_SEARCH`, queries arXiv, retrieves candidate papers, and selects:
-**"PolyKV: A Shared Asymmetrically-Compressed KV Cache Pool for Multi-Agent LLM Inference"** (arXiv: 2604.24971).
+Full, unedited transcript with the pipeline trace, all candidates and verification notes: **[`examples/sample_qa_run.md`](examples/sample_qa_run.md)**. The briefing artifacts are [`examples/kv_cache_briefing.md`](examples/kv_cache_briefing.md) and [`.json`](examples/kv_cache_briefing.json).
 
-### Generated Executive Briefing
+**Input:** `"recent work on KV-cache compression for LLMs"` (Groq `openai/gpt-oss-120b`, 2026-09-18).
+arXiv returned 5 candidates (2024–2026). The ranking node selected the most recent directly relevant one, **GRKV: Global Regression for Training-Free KV Cache Compression in Long-Context LLMs** ([2605.31105](https://arxiv.org/abs/2605.31105)). The parser found 33 sections, the chunker produced 137 chunks, and the whole run took about 8 s.
 
-```markdown
-# Executive Briefing: PolyKV: A Shared Asymmetrically-Compressed KV Cache Pool for Multi-Agent LLM Inference
+**Briefing (excerpt):**
 
-**Authors:** Chen Zhang, Mingyu Gao, Lingxiao Ma, Fan Yang  
-**arXiv ID:** [2604.24971](https://arxiv.org/abs/2604.24971) | **Published:** 2026-04-28
+> **Key Results & Claims**
+> - On Llama-3.1-8B-Instruct (LongBench, 10% cache budget) GRKV raises the average score from 33.96 to 34.58 with SnapKV and from 36.00 to 36.58 with CriticalKV, improving 14/16 tasks in both cases.
+> - On Mistral-7B-Instruct‑v0.3 (LongBench, 10% cache budget) GRKV improves SnapKV from 33.12 to 33.75 and CriticalKV from 33.69 to 34.30, with gains on 12/16 and 14/16 tasks respectively. […]
+>
+> **Limitations & Edge Cases**
+> - Evaluation is limited to three open‑source English models (Llama‑3.1‑8B‑Instruct, Mistral‑7B‑Instruct‑v0.3, Qwen3‑14B) and two long‑context benchmarks (LongBench, RULER); results may not transfer to larger proprietary models or multilingual/multimodal settings.
+> - The surrogate prompt‑derived query window is an empirical proxy; misalignment between this window and actual future queries can reduce reconstruction effectiveness […]
 
----
+I checked the briefing against the PDF. All 20 numbers match with the correct model and benchmark. One method bullet says the objective minimizes "cosine distance", but the paper minimizes squared L2 error. The transcript leaves it uncorrected.
 
-## 1. Why This Paper Matters
-In multi-agent LLM systems, concurrent agents redundantly process shared context (e.g. system prompts, world states, tool descriptions), leading to prohibitive KV-cache memory explosions. PolyKV addresses this with an asymmetric, shared KV-cache pool across agents, slashing memory pressure without compromising task completion accuracy.
-
-## 2. Problem Statement
-Existing KV cache compression methods operate independently per-session. In collaborative multi-agent settings, this causes duplicate retention of identical prefix tokens across distinct agent contexts, causing GPU memory exhaustion and bottlenecking batch concurrency.
-
-## 3. Method & Technical Approach
-- Implements a unified prefix-sharing cache pool with hierarchical token reference counting.
-- Employs asymmetric compression: retains high-precision keys/values for agent-shared instructions while aggressively quantizing agent-private reasoning tokens.
-- Introduces dynamic cache eviction gates based on inter-agent token reuse frequency.
-
-## 4. Key Results & Claims
-- Achieves up to 3.8x KV-cache memory reduction across 8-agent collaborative benchmarks.
-- Maintains 99.2% benchmark accuracy compared to uncompressed multi-agent baselines.
-- Increases multi-agent inference throughput by 2.4x on 8x A100 GPU clusters.
-
-## 5. Limitations & Edge Cases
-- Memory reduction benefits diminish when agent workflows exhibit zero prefix or context sharing.
-- Asymmetric quantization requires specialized runtime kernels for mixed-precision matrix multiplication.
-- Evaluated primarily on cooperative role-playing and code-generation agent benchmarks.
-
-## 6. Suggested Follow-up Questions
-- How does PolyKV coordinate cache eviction when agents possess divergent context retention priorities?
-- What is the latency penalty of cross-agent lock contention in the shared cache pool?
-- Can the asymmetric quantization thresholds be adapted dynamically based on GPU thermal throttling?
-```
-
-### Sample Grounded QA Exchanges
+**QA exchanges:**
 
 ```
-Ask Paper > How does the paper achieve asymmetric compression between shared and private tokens?
+Ask Paper > What does GRKV score on RULER with Llama-3.1-8B-Instruct at a 10% cache budget?
 ```
-> **Answer:** Based on Section 3 (*System Architecture*, pp. 4–5), PolyKV segregates the KV cache into a global shared prefix segment and agent-specific private segments. Shared prefix tokens are stored with high bit-width precision (FP16/BF16) to prevent compounding degradation across agents. In contrast, private reasoning tokens undergo aggressive 4-bit grouped quantization with dynamic outlier protection `[Section 3.2, p. 5]`.
+> GRKV attains an average RULER score of **29.09** with Llama‑3.1‑8B‑Instruct when the cache budget is limited to 10 % (using the SnapKV eviction method)【Source 2】. (With the alternative CriticalKV eviction method, the score is 41.51【Source 2】.)
+>
+> *Citations: 4 Experiments › 4.2 Experimental Results (p. 7, score 0.318), plus three appendix chunks. Both numbers match Table 2.*
 
 ```
-Ask Paper > What throughput acceleration was measured on multi-agent benchmarks?
+Ask Paper > Does GRKV require fine-tuning the model?
 ```
-> **Answer:** The experimental results in Section 5 (*Evaluation*, p. 8) report a 2.4x throughput increase on an 8-agent benchmark running on an 8x A100 GPU cluster. This acceleration stems directly from the reduced GPU memory footprint, enabling larger active batch sizes without out-of-memory (OOM) faults `[Section 5.3, p. 8]`.
+> *[Not grounded]* The retrieved passages do not answer this. The provided excerpts do not contain any statement about whether GRKV requires fine‑tuning of the language model. […]
+>
+> *This is an honest retrieval miss: the paper says "training-free", but lexical retrieval does not link that to "fine-tuning". The model reported the gap instead of guessing.*
 
 ```
-Ask Paper > What is the capital of France and what is the weather there?
+Ask Paper > What is the capital of France?
 ```
-> **[Ungrounded Query Refusal]**  
-> *"I cannot answer this question based on the paper. The document does not contain relevant information regarding this query, and answers are strictly restricted to verified source content to prevent hallucination."*
+> *[Refused by similarity gate: best chunk scored 0.0 < 0.15, so no LLM call was made]*
+> I cannot answer this question based on the paper. The document does not contain relevant information regarding this query […]
 
 ---
 
 ## 5. Design Decisions & Tradeoffs
 
-### A. Stateful Graph vs. Monolithic Prompt Chain
-- **Decision:** Built an explicit state machine around a typed `AgentState` dataclass rather than passing massive context blocks through a single monolithic prompt.
-- **Tradeoff:** A monolithic prompt is simpler to write initially, but fails catastrophically under edge cases (e.g. network timeouts, unparseable PDFs, or ambiguous search queries). The explicit graph isolates failure domains: if PDF download fails, the graph falls back to abstract analysis; if search returns 0 papers, it relaxes query terms without restarting.
-- **Identifiable State:** Every transition records execution duration, node status, and state mutations, serializing cleanly into reproducible session files on disk.
+**Explicit graph in plain Python.** Each stage is a function `AgentState → AgentState` in `nodes/`, and `graph.py` wires them in order with one conditional edge (ranking runs only for topic searches with more than one candidate). An error recorded by a node stops the graph at that point. I chose this over LangGraph because a linear pipeline with one branch doesn't need a framework: each node stays unit-testable, and the whole control flow is visible in about 100 lines. The QA loop sits outside the graph because it is interactive. It reads the same state object.
 
-### B. Local Vector Store vs Heavyweight External DBs
-- **Decision:** Engineered a self-contained local vector store using sublinear TF-IDF and NumPy cosine similarity rather than requiring Chroma, Pinecone, or Milvus.
-- **Tradeoff:** Heavy external vector databases introduce binary dependency headaches, C++ compiler prerequisites, and potential service connection failures. Our NumPy-based engine requires zero external infrastructure, executes cosine similarity in under 5ms for 50–100 chunks, and serializes directly to disk JSON. For papers under 50 pages, dense-sparse hybrid TF-IDF provides near-instantaneous, deterministic retrieval.
+**State and persistence.** `AgentState` is a Pydantic model holding the query, candidates, selected paper, parsed sections, chunks, briefing, QA history and a per-node execution log. It is saved to `data/sessions/session_<id>.json` when the graph finishes and after every QA turn, so `--session` resumes a conversation after a restart. The vector index is not serialized separately; it is rebuilt from the persisted chunks in milliseconds.
 
-### C. Section-Aware Chunking & Provenance Tracking
-- **Decision:** Chunking respects structural section boundaries with sliding sentence overlap, tagging each chunk with `section_heading` and `page_number`.
-- **Tradeoff:** Fixed-character window chunking (e.g. 500 characters blindly sliced) frequently splits equations, cuts across section boundaries, and loses context. Our section-bounded approach ensures chunks from `Methodology` never bleed into `References`, and citations can pinpoint exact page numbers in the paper.
+**Lexical retrieval instead of neural embeddings.** The vector store is TF-IDF plus cosine similarity in NumPy. There are no model downloads and no native dependencies, it is deterministic, and searching 137 chunks takes well under 1 ms (the index builds in about 7 ms). The cost is vocabulary mismatch: in the example, a question about "fine-tuning" missed the paper's "training-free". I reduced false matches by removing stopwords. Without that, "What is the capital of France?" scored 0.18 on "what/is/the" and passed the gate. I also split hyphenated terms so "LLaMA-3-8B" matches "LLaMA-3-Instruct-8B". A small local embedding model (e.g. `bge-small`) fused with TF-IDF would be the next step.
 
-### D. Anti-Hallucination Guard & Similarity Gating
-- **Decision:** Implemented a similarity threshold gate in the retrieval pipeline.
-- **Tradeoff:** Many RAG systems force the LLM to generate an answer regardless of retrieval quality, causing plausible-sounding hallucinations when questions are out-of-domain. Our gate measures the cosine score of top retrieved chunks: if the score falls below the minimum threshold (e.g. 0.15), the agent refuses immediately without invoking generative extrapolation.
+**Grounding in layers.** (1) Paper metadata (title, authors, ID, date) is copied from arXiv by code, and the LLM's values for those fields are discarded. (2) A similarity gate refuses out-of-scope questions before any LLM call. (3) The QA prompt allows only the retrieved passages and requires a `NOT IN PAPER:` marker for refusals, which the code checks instead of guessing from wording. (4) Every answer lists the chunks it was given. (5) The summarizer never sees flattened tables. On one run, Groq's model mixed LongBench and RULER scores from table rows, so tables are excluded from the briefing context and stay available to QA. The QA prompt tells the model to quote a table value only when its row and column are unambiguous.
 
-### E. What I'd Do Differently With More Time
-1. **Hybrid ColBERT Retrieval:** Integrate a lightweight local late-interaction model (e.g. ColBERTv2) to provide token-level interaction scores alongside lexical matching.
-2. **Multimodal Figure & Table Extraction:** Utilize a vision model to extract and transcribe architecture diagrams, ablation tables, and performance charts from the PDF.
-3. **Citation Graph Traversal:** Enable the agent to recursively fetch cited papers mentioned in the methodology, assembling a cross-paper synthesis graph.
+**Handling the vague and failure cases.**
+- **Zero candidates:** relax to the two leading terms, then accept any term.
+- **Many candidates:** fetch the top 5 by arXiv relevance and let the ranking node choose, preferring recency for "recent" queries.
+- **PDF problems:** download failure or no text layer → the arXiv abstract becomes the only section, with a warning. PyMuPDF failure → `pypdf`. Huge papers are bounded by the 14k-character briefing context and by chunk-level retrieval.
+- **LLM problems:** retries with backoff and Gemini model fallback. Malformed JSON → one corrective re-ask. Total failure → an abstract-only briefing that says so.
 
-### F. Known Limitations
-- **Scanned / Image-Only PDFs:** If a paper is uploaded as a raw scanned bitmap without an OCR layer, text extraction falls back to the arXiv abstract.
-- **Massive Monograph PDFs:** PDFs exceeding 60 pages (e.g. PhD dissertations) are truncated to the core technical sections (Intro, Method, Results, Discussion) to respect processing budgets.
+**What I would do with more time.**
+1. Hybrid retrieval (TF-IDF + local dense embeddings) with a cross-encoder reranker.
+2. Table extraction that keeps structure (PyMuPDF `find_tables` or a layout model), so numeric QA doesn't rely on flattened text.
+3. Exact page numbers per chunk. Pages are currently interpolated within a section.
+4. A small evaluation set of question/answer pairs per paper, to measure grounding instead of spot-checking it.
+
+**Known limitations.**
+- Retrieval is lexical, so synonyms and paraphrases can miss (see the example).
+- Heading detection assumes LaTeX-style bold numbered headings. Unusual templates fall back to fewer, coarser sections. Floating tables can be attributed to the neighbouring section.
+- Scanned PDFs without a text layer are summarized from the abstract only. No OCR is used.
+- LLM output is not perfect. The example briefing contains one wrong method detail, which is why the briefing is a starting point for reading and not a substitute for it.
 
 ---
 
-## 6. Running Unit & Integration Tests
+## 6. Running Tests
 
-The test suite covers all pipeline stages in offline mode using `MockLLM`:
+34 offline tests use a mock LLM and a synthetic PDF, so no network or keys are needed:
 
 ```bash
-source .venv/bin/activate
-pytest tests/ -v
+pytest tests/ -q
+# 34 passed in 0.3s
 ```
 
-Output:
-```
-============================= test session starts ==============================
-tests/test_arxiv_client.py::test_parse_atom_entry PASSED                 [  7%]
-tests/test_chunker.py::test_section_aware_chunking PASSED                [ 15%]
-tests/test_graph.py::test_full_graph_execution PASSED                    [ 23%]
-tests/test_pdf_parser.py::test_pdf_fallback_to_abstract PASSED           [ 30%]
-tests/test_qa_agent.py::test_grounded_qa_with_citations PASSED           [ 38%]
-tests/test_qa_agent.py::test_anti_hallucination_refusal PASSED           [ 46%]
-tests/test_query_parser.py::test_parse_direct_arxiv_id PASSED            [ 53%]
-tests/test_query_parser.py::test_parse_arxiv_id_with_version PASSED      [ 61%]
-tests/test_query_parser.py::test_parse_arxiv_abs_url PASSED              [ 69%]
-tests/test_query_parser.py::test_parse_arxiv_pdf_url PASSED              [ 76%]
-tests/test_query_parser.py::test_parse_topic_query PASSED                [ 84%]
-tests/test_query_parser.py::test_parse_empty_query PASSED                [ 92%]
-tests/test_vector_store.py::test_vector_store_search_and_persistence PASSED [100%]
-============================== 13 passed in 0.19s ==============================
-```
+They cover query parsing, Atom parsing and query relaxation, heading detection on a generated PDF, chunking, retrieval and the stopword gate, grounded and refused QA, provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
 
 ---
 
@@ -351,54 +315,40 @@ tests/test_vector_store.py::test_vector_store_search_and_persistence PASSED [100
 
 ```
 .
-├── CLAUDE.md                   # Developer instructions & strict constraints
-├── VIDEO_REFLECTION_SCRIPT.md  # 4-minute presentation video script
-├── pyproject.toml              # Modern Python packaging configuration
-├── README.md                   # System documentation & technical tradeoffs
-├── .env.example                # Configuration template
-├── .gitignore                  # Production gitignore (blocks session logs, caches)
-├── docs/
-│   └── DEVELOPER_GUIDE.md      # Specification for contributors and future tools
+├── README.md
+├── pyproject.toml
+├── .env.example                 # configuration template (copy to .env)
+├── docs/DEVELOPER_GUIDE.md      # conventions for contributors
 ├── examples/
-│   ├── sample_qa_run.md        # Detailed execution trace & sample QA exchanges
-│   ├── kv_cache_briefing.json  # Real generated JSON briefing artifact
-│   └── kv_cache_briefing.md    # Real generated Markdown briefing artifact
+│   ├── sample_qa_run.md         # full example run with verification notes
+│   ├── kv_cache_briefing.md     # generated briefing (Markdown)
+│   └── kv_cache_briefing.json   # generated briefing (JSON)
 ├── arxiv_digest/
-│   ├── __init__.py             # Public module interface
-│   ├── config.py               # Environment configuration & provider settings
-│   ├── models.py               # Pydantic schemas (AgentState, ExecutiveBriefing, etc.)
-│   ├── state.py                # State container, serialization, and transition logging
-│   ├── graph.py                # Stateful graph orchestrator & routing
-│   ├── agent.py                # High-level Python class (ArxivDigestAgent)
-│   ├── cli.py                  # Rich interactive CLI & export flags
+│   ├── cli.py                   # Rich CLI, exports, QA REPL
+│   ├── agent.py                 # ArxivDigestAgent Python API
+│   ├── graph.py                 # stateful graph orchestration
+│   ├── state.py                 # AgentState + session persistence
+│   ├── models.py                # Pydantic schemas (ExecutiveBriefing, TextChunk, ...)
+│   ├── config.py                # .env loading and provider selection
 │   ├── nodes/
-│   │   ├── __init__.py
-│   │   ├── query_parser.py     # Intent & arXiv ID parsing
-│   │   ├── arxiv_client.py     # Official arXiv Atom feed client
-│   │   ├── ranker.py           # Multi-candidate ranking & selection
-│   │   ├── pdf_parser.py       # PDF downloader & structural section extractor
-│   │   ├── chunker.py          # Section-aware semantic chunker
-│   │   ├── vector_store.py     # Local vector database & cosine retrieval
-│   │   ├── summarizer.py       # Executive briefing generator
-│   │   └── qa_agent.py         # Grounded RAG QA with anti-hallucination gate
+│   │   ├── query_parser.py      # intent + arXiv ID/URL parsing
+│   │   ├── arxiv_client.py      # Atom API client + query relaxation
+│   │   ├── ranker.py            # candidate selection (LLM + recency-aware fallback)
+│   │   ├── pdf_parser.py        # download, heading detection, references
+│   │   ├── chunker.py           # section-bounded chunking
+│   │   ├── vector_store.py      # TF-IDF index + cosine search
+│   │   ├── summarizer.py        # briefing generation and validation
+│   │   └── qa_agent.py          # grounded QA with similarity gate
 │   └── llm/
-│       ├── __init__.py         # LLM provider factory
-│       ├── base.py             # Abstract BaseLLM wrapper
-│       ├── gemini_client.py    # Google Gemini free tier provider
-│       ├── groq_client.py      # Groq free tier provider
-│       ├── ollama_client.py    # Local Ollama provider
-│       └── mock_client.py      # Deterministic offline mock provider
-└── tests/
-    ├── test_query_parser.py
-    ├── test_arxiv_client.py
-    ├── test_pdf_parser.py
-    ├── test_chunker.py
-    ├── test_vector_store.py
-    ├── test_qa_agent.py
-    └── test_graph.py
+│       ├── base.py              # interface + HTTP retry
+│       ├── groq_client.py
+│       ├── gemini_client.py     # with model fallback
+│       ├── ollama_client.py
+│       └── mock_client.py       # offline placeholder provider
+└── tests/                       # 34 offline tests
 ```
 
 ---
 
 ## License
-MIT License. Built with precision by **Jay Gautam** for the **8byte** assessment.
+MIT License. Built by **Jay Gautam** for the **8byte** assessment.
