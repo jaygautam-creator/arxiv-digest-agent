@@ -1,0 +1,32 @@
+{
+  "title": "Attention Is All You Need",
+  "authors": [
+    "Lead Researcher",
+    "Contributing Author"
+  ],
+  "arxiv_id": "mock.arxiv.id",
+  "publish_date": "2024-01-01",
+  "link": "https://arxiv.org/abs/mock.arxiv.id",
+  "summary_plain_english": "This paper introduces a transformative approach to addressing computational efficiency and memory bottlenecks in deep learning architectures. By rethinking representation and caching mechanisms, the authors achieve significant inference speedups without accuracy degradation.",
+  "problem_statement": "Modern large-scale models suffer from severe quadratic memory growth and high latency during sequence generation, severely limiting deployment on resource-constrained hardware.",
+  "method_approach": [
+    "Formulates a sparse, adaptive compression policy targeting token redundancy.",
+    "Integrates an attention-guided dynamic pruning gate during runtime generation.",
+    "Employs selective kernel approximation to maintain long-range context fidelity."
+  ],
+  "key_results_claims": [
+    "Reduces peak memory utilization by up to 4.2x during extended context generation.",
+    "Maintains 99.4% task performance across standard LLM evaluation benchmarks (MMLU, GSM8k).",
+    "Demonstrates 2.8x throughput acceleration on consumer-grade GPU clusters."
+  ],
+  "limitations": [
+    "Requires hardware support for structured sparse matrix multiplication to realize maximum gains.",
+    "Evaluated primarily on autoregressive text generation, with limited exploration on multimodal inputs.",
+    "Sensitivity to ultra-high compression ratios where rare token associations may be dropped."
+  ],
+  "suggested_followup_questions": [
+    "How does this compression method generalize to speculative decoding workflows?",
+    "What is the quantitative latency impact when switching between dense and compressed layers?",
+    "Can the dynamic pruning thresholds be learned end-to-end via reinforcement learning?"
+  ]
+}
