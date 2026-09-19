@@ -100,3 +100,12 @@ def test_tfidf_mode_and_missing_extra_load_no_models():
     assert load_retrieval_models(AgentConfig(retrieval_mode="tfidf")) == (None, None)
     with patch("arxiv_digest.embeddings.fastembed_available", return_value=False):
         assert load_retrieval_models(AgentConfig(retrieval_mode="auto")) == (None, None)
+
+
+def test_gate_passes_on_either_signal_and_refuses_when_both_fail():
+    hybrid = LocalVectorStore(chunks=_chunks(), embedder=FakeEmbedder())
+
+    # "machines" is outside the fake embedder's vocabulary (dense score 0) but matches a chunk by keyword.
+    assert hybrid.search("which machines", min_threshold=0.05, dense_threshold=0.5)
+    assert hybrid.search("which machines", min_threshold=0.99, dense_threshold=0.5) == []
+    assert hybrid.search("chocolate recipe", min_threshold=0.05, dense_threshold=0.5) == []

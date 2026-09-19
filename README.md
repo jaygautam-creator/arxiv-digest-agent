@@ -131,6 +131,7 @@ class AgentState(BaseModel):
    - Falls back to `pypdf` if PyMuPDF fails, and to the arXiv abstract if the PDF cannot be downloaded or has no text layer (e.g. scanned images).
 5. **`chunk_and_embed`**:
    - Chunks never cross a section boundary, and the References section is not indexed.
+   - One extra chunk holds the paper's arXiv metadata (title, authors, date, ID, categories), so questions like "who are the authors?" are answered and cited from the arXiv record.
    - Packs sentences into chunks of about 800 characters with a 150-character overlap. Table rows are kept whole, one per line.
    - Tags each chunk with its section path and its exact page range (e.g. `pp. 21–22`), taken from the PDF block each sentence came from.
 6. **`vector_indexing`**:
@@ -142,7 +143,7 @@ class AgentState(BaseModel):
    - Validates the LLM's JSON against the `ExecutiveBriefing` schema and re-asks once with the validation error if it is malformed. Title, authors, ID and date always come from arXiv, never from the LLM.
    - If the LLM fails outright, emits an abstract-only briefing whose other fields say "Not available" rather than inventing content.
 8. **`answer_question`** (entry point `ask`, run once per question):
-   - Retrieves the top 4 chunks. If the question isn't similar enough to any chunk, it refuses without calling the LLM: embedding similarity < 0.55 in hybrid mode, TF-IDF cosine < 0.05 otherwise. Both thresholds were chosen from the evaluation set.
+   - Retrieves the top 4 chunks. It refuses without calling the LLM only when no signal finds the question relevant. In hybrid mode that means embedding similarity < 0.55 **and** TF-IDF < 0.05, so off-topic questions fail both, while short factual ones ("who is author") pass on keywords. In TF-IDF mode it means TF-IDF < 0.05. Thresholds were chosen from the evaluation set.
    - Otherwise the LLM answers only from those chunks, citing `[Source n]`. If they don't contain the answer, it must start its reply with `NOT IN PAPER:`, and the answer is shown as not grounded.
    - Every turn is appended to `qa_history`.
 9. **`persist_session`**: writes the whole state to `data/sessions/session_<id>.json`, after both `analyze` and every `ask`.
@@ -346,10 +347,10 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 ## 7. Running Tests
 
-51 offline tests use a mock LLM, a fake embedder and a generated PDF, so no network, API keys or model downloads are needed. CI runs the same checks on every push (Python 3.10 and 3.13):
+55 offline tests use a mock LLM, a fake embedder and a generated PDF, so no network, API keys or model downloads are needed. CI runs the same checks on every push (Python 3.10 and 3.13):
 
 ```bash
-pytest tests/ -q                                   # 51 passed
+pytest tests/ -q                                   # 55 passed
 ruff check arxiv_digest evals tests                # lint (pyflakes, bugbear, import order, ...)
 ruff format --check arxiv_digest evals tests       # formatting
 mypy arxiv_digest evals                            # type checking
@@ -403,7 +404,7 @@ The tests cover:
 │       ├── gemini_client.py     # with model fallback
 │       ├── ollama_client.py
 │       └── mock_client.py       # offline placeholder provider
-└── tests/                       # 51 offline tests
+└── tests/                       # 55 offline tests
 ```
 
 ---

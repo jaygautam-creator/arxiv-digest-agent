@@ -11,7 +11,7 @@ import re
 import time
 
 from arxiv_digest.config import AgentConfig
-from arxiv_digest.models import TextChunk
+from arxiv_digest.models import PaperMetadata, TextChunk
 from arxiv_digest.state import AgentState
 
 
@@ -94,6 +94,28 @@ def create_chunks_for_section(
     return chunks
 
 
+def metadata_chunk(paper: PaperMetadata) -> TextChunk:
+    """A retrievable chunk of the paper's arXiv metadata.
+
+    Questions like "who are the authors?" or "when was it published?" are about the record,
+    not the body text, and the PDF's title block is often too garbled to match them.
+    """
+    authors = ", ".join(paper.authors) if paper.authors else "not listed"
+    text = (
+        f"Paper metadata from arXiv. Title: {paper.title}. "
+        f"Authors: {authors}. The paper was written by {authors} (author list). "
+        f"Published on {paper.published_date[:10]} (publication date). arXiv ID: {paper.arxiv_id}. "
+        f"Categories: {', '.join(paper.categories) or 'not listed'}. Link: {paper.abs_url}."
+    )
+    return TextChunk(
+        chunk_id="metadata",
+        section_heading="arXiv metadata",
+        page_number=1,
+        text=text,
+        token_count=len(text.split()),
+    )
+
+
 def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
     """Graph Node: Segment parsed paper into structured chunks with provenance."""
     start_time = time.time()
@@ -105,7 +127,7 @@ def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
         return state
 
     parsed = state.parsed_paper
-    all_chunks: list[TextChunk] = []
+    all_chunks: list[TextChunk] = [metadata_chunk(parsed.metadata)]
 
     for section_index, section in enumerate(parsed.sections):
         # Don't create chunks for references to avoid polluting technical retrieval
@@ -124,8 +146,8 @@ def chunk_and_embed_node(state: AgentState, config: AgentConfig) -> AgentState:
         )
         all_chunks.extend(section_chunks)
 
-    # Edge case: if no chunks created (e.g. abstract only), create single chunk
-    if not all_chunks and parsed.metadata.abstract:
+    # Edge case: no body chunks (e.g. an empty parse), so index the abstract on its own
+    if len(all_chunks) == 1 and parsed.metadata.abstract:
         all_chunks.append(
             TextChunk(
                 chunk_id="abstract_1",

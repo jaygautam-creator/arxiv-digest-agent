@@ -2,9 +2,11 @@
 
 TF-IDF (sublinear TF, smoothed IDF, stopwords removed) always runs. When an embedder is
 available, retrieval becomes hybrid:
-  1. Gate: refuse if no chunk's embedding similarity reaches `dense_threshold`.
-     On the eval set this separated off-topic from answerable questions cleanly,
-     where the TF-IDF gate wrongly refused a third of answerable ones.
+  1. Gate: refuse only if neither signal finds the question relevant: no chunk reaches
+     `dense_threshold` on embeddings *and* none reaches `min_threshold` on TF-IDF. Off-topic
+     questions fail both (on the eval set: embedding similarity <= 0.46, TF-IDF exactly 0),
+     while short factual questions ("who is author") can be vague to an embedding model yet
+     match the metadata chunk by keyword.
   2. Fuse the dense and TF-IDF rankings with reciprocal rank fusion (RRF).
   3. Rerank the top `candidates` with a cross-encoder, if one is configured.
 
@@ -37,7 +39,7 @@ STOPWORDS = frozenset(
     my no nor not now of off on once only or other our ours out over own same she should so some
     such than that the their theirs them then there these they this those through to too under
     until up very was we were what when where which while who whom why will with would you your
-    yours tell describe explain paper authors author""".split()
+    yours tell describe explain paper""".split()
 )
 
 
@@ -168,8 +170,8 @@ class LocalVectorStore:
         """Return up to top_k (chunk, score) pairs, or [] when the query fails the relevance gate.
 
         TF-IDF mode: each chunk must reach `min_threshold`; the score is TF-IDF cosine.
-        Hybrid mode: the query must reach `dense_threshold` on its best chunk; the score is
-        embedding cosine similarity.
+        Hybrid mode: the query must reach `dense_threshold` on embeddings or `min_threshold` on
+        TF-IDF for its best chunk; the score is embedding cosine similarity.
         """
         if self.matrix is None or len(self.chunks) == 0:
             return []
@@ -179,7 +181,7 @@ class LocalVectorStore:
         lexical = np.dot(self.matrix, q_vec)
 
         if self.dense is not None:
-            return self._hybrid_search(query, lexical, top_k, dense_threshold, candidates)
+            return self._hybrid_search(query, lexical, top_k, min_threshold, dense_threshold, candidates)
 
         if np.linalg.norm(q_vec) == 0:
             return []
@@ -195,11 +197,17 @@ class LocalVectorStore:
         return results
 
     def _hybrid_search(
-        self, query: str, lexical: np.ndarray, top_k: int, dense_threshold: float, candidates: int
+        self,
+        query: str,
+        lexical: np.ndarray,
+        top_k: int,
+        min_threshold: float,
+        dense_threshold: float,
+        candidates: int,
     ) -> list[tuple[TextChunk, float]]:
         assert self.dense is not None and self.embedder is not None  # hybrid mode only
         dense = self.dense @ self.embedder.embed_query(query)
-        if float(dense.max()) < dense_threshold:
+        if float(dense.max()) < dense_threshold and float(lexical.max()) < min_threshold:
             return []
 
         pool = np.argsort(-reciprocal_rank_fusion(dense, lexical))[:candidates]
