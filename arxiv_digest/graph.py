@@ -167,9 +167,12 @@ class StateGraph:
         shared = {n for n in self.nodes if sum(n in r for r in reach.values()) > 1}
 
         def box(name: str) -> str:
-            return f'{name}["{name}<br/><small>{self.nodes[name].description}</small>"]'
+            # A Markdown-string label: node name, then its description on a second line.
+            return f'{name}["`{name}\n{self.nodes[name].description}`"]'
 
-        lines = ["flowchart TD"]
+        # SVG text labels are measured with the font they are drawn in, so GitHub's renderer
+        # doesn't clip them the way it can clip HTML labels.
+        lines = ['%%{init: {"flowchart": {"htmlLabels": false}}}%%', "flowchart TD"]
         for entry, first in self.entry_points.items():
             lines.append(f"    {entry}_in([{entry}]) --> {first}")
         for entry, members in reach.items():

@@ -38,22 +38,32 @@ An autonomous, stateful research agent designed to streamline literature review 
 The graph is defined as data in [`arxiv_digest/graph.py`](arxiv_digest/graph.py): named nodes, edges with routing conditions, and two entry points. One runner executes it. The diagram below is generated from that definition (`python -m arxiv_digest --graph`), and a test fails if it drifts from the code.
 
 ```mermaid
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
 flowchart TD
     analyze_in([analyze]) --> query_understanding
     ask_in([ask]) --> answer_question
     subgraph analyze_flow [analyze]
-        query_understanding["query_understanding<br/><small>classify topic vs arXiv ID</small>"]
-        arxiv_retrieval["arxiv_retrieval<br/><small>query the arXiv Atom API</small>"]
-        paper_ranking["paper_ranking<br/><small>choose one candidate</small>"]
-        fetch_and_parse["fetch_and_parse<br/><small>download PDF, extract sections</small>"]
-        chunk_and_embed["chunk_and_embed<br/><small>section-bounded chunks</small>"]
-        vector_indexing["vector_indexing<br/><small>TF-IDF / hybrid index</small>"]
-        summarize_briefing["summarize_briefing<br/><small>structured briefing</small>"]
+        query_understanding["`query_understanding
+classify topic vs arXiv ID`"]
+        arxiv_retrieval["`arxiv_retrieval
+query the arXiv Atom API`"]
+        paper_ranking["`paper_ranking
+choose one candidate`"]
+        fetch_and_parse["`fetch_and_parse
+download PDF, extract sections`"]
+        chunk_and_embed["`chunk_and_embed
+section-bounded chunks`"]
+        vector_indexing["`vector_indexing
+TF-IDF / hybrid index`"]
+        summarize_briefing["`summarize_briefing
+structured briefing`"]
     end
     subgraph ask_flow [ask]
-        answer_question["answer_question<br/><small>grounded RAG answer</small>"]
+        answer_question["`answer_question
+grounded RAG answer`"]
     end
-    persist_session["persist_session<br/><small>save state as JSON</small>"]
+    persist_session["`persist_session
+save state as JSON`"]
     query_understanding --> arxiv_retrieval
     arxiv_retrieval -- topic search --> paper_ranking
     arxiv_retrieval -- direct ID --> fetch_and_parse
