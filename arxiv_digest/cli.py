@@ -97,7 +97,16 @@ def run_qa_interactive_loop(agent: ArxivDigestAgent, state: AgentState) -> None:
 
 
 def main() -> None:
-    """Main CLI entrypoint."""
+    """Main CLI entrypoint: exits cleanly on Ctrl-C instead of printing a traceback."""
+    try:
+        run()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted.[/dim]")
+        sys.exit(130)
+
+
+def run() -> None:
+    """Parse arguments, run the analysis or resume a session, then enter the QA loop."""
     parser = argparse.ArgumentParser(description="Autonomous arXiv Paper Digest & QA Agent (Jay Gautam for 8byte)")
     parser.add_argument(
         "query",
@@ -184,7 +193,11 @@ def main() -> None:
             console.print(f"[bold red]Session file not found:[/bold red] {session_file}")
             sys.exit(1)
         console.print(f"[cyan]Resuming existing session from:[/cyan] {session_file}")
-        state = agent.load_session(session_file)
+        try:
+            state = agent.load_session(session_file)
+        except (OSError, ValueError) as e:  # unreadable file, invalid JSON, or not a session
+            console.print(f"[bold red]Could not load session file:[/bold red] {str(e).splitlines()[0]}")
+            sys.exit(1)
     else:
         if not args.query:
             console.print("[bold red]Error:[/bold red] Please provide a research topic or arXiv ID.")

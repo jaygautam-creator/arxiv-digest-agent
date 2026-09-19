@@ -100,3 +100,29 @@ def test_prose_block_is_not_a_table():
         for y, t in [(100, "GRKV raises the average"), (112, "score from 27.44 to 29.09"), (124, "with SnapKV.")]
     ]
     assert _table_rows(prose) is None
+
+
+def _paper() -> PaperMetadata:
+    return PaperMetadata(
+        arxiv_id="2401.00001", title="t", abstract="a",
+        pdf_url="https://arxiv.org/pdf/2401.00001", abs_url="u", published_date="2024-01-01",
+    )  # fmt: skip
+
+
+def test_download_rejects_html_and_replaces_a_bad_cached_file(tmp_path):
+    from io import BytesIO
+    from unittest.mock import patch
+
+    from arxiv_digest.nodes.pdf_parser import download_pdf
+
+    cached = tmp_path / "2401.00001.pdf"
+    cached.write_bytes(b"<html>rate limited</html>" * 100)  # a bad file left by an earlier run
+
+    html = BytesIO(b"<html>Too many requests</html>" * 100)
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: html):
+        assert download_pdf(_paper(), tmp_path) is None
+    assert not cached.exists()
+
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: BytesIO(b"%PDF-1.7 real content")):
+        assert download_pdf(_paper(), tmp_path) == cached
+    assert cached.read_bytes().startswith(b"%PDF-")

@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
-from arxiv_digest.config import AgentConfig
+from arxiv_digest.config import USER_AGENT, AgentConfig
 from arxiv_digest.models import PaperMetadata, PaperSection, ParsedPaper
 from arxiv_digest.state import AgentState
 
@@ -33,19 +33,28 @@ SECTION_HEADER_REGEX = re.compile(
 )
 
 
+def is_pdf(data: bytes) -> bool:
+    """PDF files start with "%PDF-"; arXiv error or rate-limit pages are HTML."""
+    return data[:5] == b"%PDF-"
+
+
 def download_pdf(
     paper: PaperMetadata,
     cache_dir: Path,
     timeout: float = 45.0,
 ) -> Path | None:
-    """Download arXiv PDF with local disk caching and polite User-Agent."""
+    """Download the paper's PDF, with a local cache that only ever holds real PDFs."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     sanitized_id = paper.arxiv_id.replace("/", "_")
     target_path = cache_dir / f"{sanitized_id}.pdf"
 
-    if target_path.exists() and target_path.stat().st_size > 1024:
-        logger.info(f"Using cached PDF: {target_path}")
-        return target_path
+    if target_path.exists():
+        with open(target_path, "rb") as f:
+            if is_pdf(f.read(5)):
+                logger.info(f"Using cached PDF: {target_path}")
+                return target_path
+        logger.warning(f"Cached file {target_path} is not a PDF; downloading again.")
+        target_path.unlink()
 
     urls_to_try = [
         paper.pdf_url,
@@ -55,21 +64,16 @@ def download_pdf(
 
     for url in urls_to_try:
         try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "curl/8.16.0",
-                    "Accept": "*/*",
-                },
-            )
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 content = resp.read()
-                if len(content) > 1000:
-                    with open(target_path, "wb") as f:
-                        f.write(content)
-                    return target_path
         except Exception as e:
             logger.debug(f"Failed to download PDF from {url}: {e}")
+            continue
+        if is_pdf(content):
+            target_path.write_bytes(content)
+            return target_path
+        logger.debug(f"Response from {url} is not a PDF ({len(content)} bytes); skipping.")
 
     logger.warning(f"Could not download PDF for {paper.arxiv_id} from any candidate URL.")
     return None

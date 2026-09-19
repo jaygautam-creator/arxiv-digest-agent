@@ -347,10 +347,10 @@ Giving the LLM 6 chunks instead of 4 didn't change the hybrid result (20/27), so
 
 ## 7. Running Tests
 
-55 offline tests use a mock LLM, a fake embedder and a generated PDF, so no network, API keys or model downloads are needed. CI runs the same checks on every push (Python 3.10 and 3.13):
+62 offline tests use a mock LLM, a fake embedder and a generated PDF, so no network, API keys or model downloads are needed. CI runs the same checks on every push (Python 3.10 and 3.13):
 
 ```bash
-pytest tests/ -q                                   # 55 passed
+pytest tests/ -q                                   # 62 passed
 ruff check arxiv_digest evals tests                # lint (pyflakes, bugbear, import order, ...)
 ruff format --check arxiv_digest evals tests       # formatting
 mypy arxiv_digest evals                            # type checking
@@ -358,10 +358,12 @@ mypy arxiv_digest evals                            # type checking
 
 The tests cover:
 - **Graph:** routing for topic vs. ID, error routing, the `ask` entry point, validation, the cycle guard, and README/diagram sync.
+- **arXiv and input handling:** IDs and URLs in every common form, API error entries, query relaxation, and rejecting non-PDF downloads.
 - **Parsing:** headings, table rows with column headers, and page-accurate chunks.
 - **Retrieval:** TF-IDF and hybrid (gate, fusion, reranking).
 - **QA:** grounded answers and refusals.
 - **LLM layer:** provider selection, retry and model fallback, briefing validation, the corrective re-ask, and the abstract-only fallback.
+- **CLI:** clean exits for a corrupt session file and for Ctrl-C.
 
 ---
 
@@ -404,7 +406,7 @@ The tests cover:
 │       ├── gemini_client.py     # with model fallback
 │       ├── ollama_client.py
 │       └── mock_client.py       # offline placeholder provider
-└── tests/                       # 55 offline tests
+└── tests/                       # 62 offline tests
 ```
 
 ---

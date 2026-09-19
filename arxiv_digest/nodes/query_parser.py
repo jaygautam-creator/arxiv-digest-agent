@@ -11,9 +11,12 @@ import time
 
 from arxiv_digest.state import AgentState
 
-# Regex for modern arXiv IDs (e.g. 2401.12345, 1706.03762v2) and legacy IDs (e.g. cs/0101001)
+# Modern arXiv IDs (2401.12345, 1706.03762v2) and legacy IDs (cs/0101001, math.GT/0309136),
+# bare or inside an arxiv.org/abs|pdf URL (with or without scheme and "www.").
 ARXIV_ID_PATTERN = re.compile(
-    r"(?:arxiv:)?(?:https?://arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5}(?:v\d+)?|[a-zA-Z\-]+/\d{7})", re.IGNORECASE
+    r"(?:arxiv:)?(?:(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/)?"
+    r"(\d{4}\.\d{4,5}(?:v\d+)?|[a-z\-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)",
+    re.IGNORECASE,
 )
 
 
@@ -29,7 +32,9 @@ def parse_query_node(state: AgentState) -> AgentState:
 
     match = ARXIV_ID_PATTERN.search(query)
     # If the query is predominantly an arXiv ID or URL
-    if match and (len(match.group(0)) >= len(query) * 0.7 or query.startswith("http") or query.startswith("arxiv:")):
+    lowered = query.lower()
+    is_link = "arxiv.org/" in lowered or lowered.startswith("arxiv:")
+    if match and (len(match.group(0)) >= len(query) * 0.7 or is_link):
         arxiv_id = match.group(1)
         # Strip version suffix if present for canonical lookup
         canonical_id = re.sub(r"v\d+$", "", arxiv_id)

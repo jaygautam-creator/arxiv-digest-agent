@@ -49,3 +49,20 @@ def test_parse_empty_query():
     state = AgentState(raw_query="   ")
     updated = parse_query_node(state)
     assert len(updated.errors) > 0
+
+
+def test_links_without_scheme_and_legacy_subject_class_ids():
+    cases = {
+        "arxiv.org/abs/2401.12345v3": "2401.12345",
+        "www.arxiv.org/pdf/2401.12345": "2401.12345",
+        "math.GT/0309136": "math.GT/0309136",
+        "hep-th/9901001v2": "hep-th/9901001",
+    }
+    for query, expected in cases.items():
+        state = parse_query_node(AgentState(raw_query=query))
+        assert (state.intent, state.parsed_arxiv_id) == ("DIRECT_ID", expected), query
+
+
+def test_a_sentence_mentioning_an_id_is_still_a_topic_search():
+    state = parse_query_node(AgentState(raw_query="compare 2401.12345 with other retrieval work"))
+    assert state.intent == "TOPIC_SEARCH"

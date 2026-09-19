@@ -91,3 +91,17 @@ def test_refusal_detection_uses_marker_and_phrases():
     assert is_refusal("**NOT IN PAPER:** the sources never discuss fine-tuning.")
     assert is_refusal("The provided excerpts do not contain any statement about this.")
     assert not is_refusal("GRKV raises the average score from 27.44 to 29.09 [Source 2].")
+
+
+def test_resumed_old_session_gets_the_metadata_chunk(tmp_path):
+    state = AgentState(session_id="old_session_without_metadata")
+    state.selected_paper = PaperMetadata(
+        arxiv_id="2605.31105", title="GRKV", authors=["Junjie Peng"], abstract="a",
+        pdf_url="u", abs_url="u", published_date="2026-05-29",
+    )  # fmt: skip
+    state.chunks = [TextChunk(chunk_id="s1_c1", section_heading="3 Methods", page_number=3, text="Ridge regression.")]
+
+    response = answer_question("who is author", state, MockLLM(), AgentConfig(data_dir=tmp_path))
+
+    assert state.chunks[0].chunk_id == "metadata"
+    assert response.citations and response.citations[0].section == "arXiv metadata"

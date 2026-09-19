@@ -10,6 +10,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+# Sent with every arXiv request; arXiv asks automated clients to identify themselves.
+USER_AGENT = "arxiv-digest-agent/0.1 (+https://github.com/jaygautam-creator/arxiv-digest-agent)"
+
 
 def load_dotenv(path: Path = Path(".env")) -> None:
     """Load KEY=VALUE lines from a .env file without overriding the real environment."""

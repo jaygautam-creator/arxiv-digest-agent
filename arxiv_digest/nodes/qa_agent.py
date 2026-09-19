@@ -13,6 +13,7 @@ import time
 from arxiv_digest.config import AgentConfig
 from arxiv_digest.llm.base import BaseLLM
 from arxiv_digest.models import QACitation, QAResponse, TextChunk
+from arxiv_digest.nodes.chunker import metadata_chunk
 from arxiv_digest.nodes.vector_store import build_vector_store, get_vector_store, register_vector_store, retrieve
 from arxiv_digest.state import AgentState, StepStatus
 
@@ -85,6 +86,9 @@ def answer_question(
     if not store:
         if state.chunks:
             # Resumed session: rebuild the index from persisted chunks once, then reuse it.
+            # Sessions saved by older versions lack the metadata chunk, so add it here.
+            if state.selected_paper and not any(c.chunk_id == "metadata" for c in state.chunks):
+                state.chunks.insert(0, metadata_chunk(state.selected_paper))
             store = build_vector_store(state.chunks, config)
             register_vector_store(state.session_id, store)
         else:

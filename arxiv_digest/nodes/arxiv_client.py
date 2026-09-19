@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
 
-from arxiv_digest.config import AgentConfig
+from arxiv_digest.config import USER_AGENT, AgentConfig
 from arxiv_digest.models import PaperMetadata
 from arxiv_digest.state import AgentState
 
@@ -177,7 +177,7 @@ def fetch_from_arxiv(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "curl/8.16.0",
+            "User-Agent": USER_AGENT,
             "Accept": "*/*",
         },
     )
@@ -188,9 +188,11 @@ def fetch_from_arxiv(
     root = ET.fromstring(xml_content)
     papers: list[PaperMetadata] = []
     for entry in root.findall("atom:entry", ATOM_NS):
-        # Some empty results return an entry with title "Error"
-        title_el = entry.find("atom:title", ATOM_NS)
-        if title_el is not None and title_el.text and "Error" in title_el.text:
+        # arXiv reports API errors as an entry whose id is .../api/errors#... ; real papers
+        # can have "Error" in their title ("Error bounds revisited"), so match on the id.
+        id_el = entry.find("atom:id", ATOM_NS)
+        if id_el is not None and id_el.text and "/api/errors" in id_el.text:
+            logger.warning("arXiv API error: %s", _clean_text(entry.findtext("atom:summary", "", ATOM_NS)))
             continue
         try:
             papers.append(parse_atom_entry(entry))

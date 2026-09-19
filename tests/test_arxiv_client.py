@@ -70,3 +70,22 @@ def test_zero_results_relax_over_content_terms(tmp_path):
     assert state.candidate_papers == [paper]
     assert calls[1] == ("quantum KV-cache", "AND")
     assert calls[2][1] == "OR" and "recent" not in calls[2][0]
+
+
+FEED = """<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><id>https://arxiv.org/api/errors#incorrect_id_format</id><title>Error</title>
+    <summary>incorrect id format</summary></entry>
+  <entry><id>http://arxiv.org/abs/2401.00001v1</id><title>Error Bounds Revisited</title>
+    <summary>A real paper.</summary><published>2024-01-01T00:00:00Z</published></entry>
+</feed>"""
+
+
+def test_api_error_entries_skipped_but_papers_titled_error_kept():
+    from io import BytesIO
+    from unittest.mock import patch
+
+    from arxiv_digest.nodes.arxiv_client import fetch_from_arxiv
+
+    with patch("urllib.request.urlopen", return_value=BytesIO(FEED.encode())):
+        papers = fetch_from_arxiv(query="error bounds")
+    assert [p.title for p in papers] == ["Error Bounds Revisited"]
