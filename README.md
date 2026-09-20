@@ -6,7 +6,7 @@
 
 > **Author:** Jay Gautam (<jaygautam561@gmail.com>)  
 > **Target / Organization:** 8byte Engineering Assessment  
-> **Repository:** [jaygautam-creator/arxiv-digest-agent](https://github.com/jaygautam-creator/arxiv-digest-agent)
+> **Repository:** [jaygautam-creator/arxiv-digest-agent](https://github.com/jaygautam-creator/arxiv-digest-agent)  
 > **Video reflection (4 min):** [watch on Google Drive](https://drive.google.com/file/d/1JoMZuC4G0BNjBWlGhLIswwuJtYnmc4Y8/view?usp=sharing)
 
 An autonomous, stateful research agent designed to streamline literature review for AI researchers and engineers. Given a natural-language research topic (e.g., *"recent work on KV-cache compression for LLMs"*) or a specific arXiv paper ID/URL, the agent executes an explicit stateful graph to retrieve candidate papers, parse document structure, index chunks into a local vector store, synthesize an executive briefing, and answer follow-up questions grounded in retrieved passages of the paper, refusing when the paper does not contain the answer.
